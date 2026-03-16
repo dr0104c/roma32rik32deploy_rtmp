@@ -1,59 +1,36 @@
-from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import OutputStream, User
-from ..schemas import StreamDetail, StreamSummary
-from .streams import get_accessible_stream_query, refresh_stream_lifecycle
+from ..errors import forbidden, not_found
+from ..models import User
+from .streams import list_streams_for_user
 
 
-def viewer_session_response(user: User) -> tuple[str | None, int | None, str | None]:
-    if user.status == "approved":
-        return None, None, None
-    if user.status == "pending":
-        return None, None, "pending approval"
-    if user.status == "rejected":
-        return None, None, "rejected"
-    return None, None, user.blocked_reason or "blocked"
+def get_user_by_client_code(db: Session, client_code: str) -> User | None:
+    return db.scalar(select(User).where(User.client_code == client_code.strip().upper()))
 
 
-def list_viewer_streams(db: Session, *, user_id: int) -> list[StreamSummary]:
-    streams = db.scalars(get_accessible_stream_query(user_id)).all()
-    return [stream_to_summary(db, stream) for stream in streams]
+def get_user(db: Session, user_id: str) -> User:
+    user = db.get(User, user_id)
+    if user is None:
+        raise not_found("user_not_found", "user not found")
+    return user
 
 
-def get_viewer_stream(db: Session, *, user_id: int, stream_id: int) -> StreamDetail:
-    stream = db.get(OutputStream, stream_id)
-    if stream is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="stream not found")
-    accessible_ids = {item.id for item in db.scalars(get_accessible_stream_query(user_id)).all()}
-    if stream.id not in accessible_ids:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="stream access is not granted")
-    stream = refresh_stream_lifecycle(db, stream)
-    db.commit()
-    return StreamDetail(
-        id=stream.id,
-        name=stream.name,
-        path_name=stream.path_name,
-        status=stream.status,
-        is_live=stream.status == "live",
-        is_active=stream.is_active,
-        last_publish_started_at=stream.last_publish_started_at,
-        last_publish_stopped_at=stream.last_publish_stopped_at,
-    )
-
-
-def stream_to_summary(db: Session, stream: OutputStream) -> StreamSummary:
-    stream = refresh_stream_lifecycle(db, stream)
-    return StreamSummary(
-        id=stream.id,
-        name=stream.name,
-        path_name=stream.path_name,
-        status=stream.status,
-        is_live=stream.status == "live",
-        last_publish_started_at=stream.last_publish_started_at,
-        last_publish_stopped_at=stream.last_publish_stopped_at,
-    )
+def list_user_stream_payloads(db: Session, user_id: str) -> list[dict]:
+    user = get_user(db, user_id)
+    if user.status != "approved":
+        raise forbidden("user_not_approved", "user is not approved")
+    return [
+        {
+            "stream_id": stream.id,
+            "name": stream.name,
+            "playback_name": stream.playback_name,
+            "is_active": stream.is_active,
+        }
+        for stream in list_streams_for_user(db, user_id)
+    ]
 
 
 def viewer_config() -> dict:

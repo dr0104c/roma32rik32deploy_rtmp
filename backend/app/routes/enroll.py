@@ -1,35 +1,22 @@
-from sqlalchemy import select
-from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 
-from ..auth import generate_client_code
 from ..db import get_db
-from ..models import User
-from ..schemas import EnrollRequest, EnrollResponse
-from ..services.streams import audit
+from ..schemas import EnrollRequest, UserResponse
+from ..services.enrollment import enroll_user
+from ..services.viewer import get_user
 
 
 router = APIRouter(prefix="/api/v1", tags=["enroll"])
 
 
-@router.post("/enroll", response_model=EnrollResponse, status_code=201)
-def enroll(body: EnrollRequest, db: Session = Depends(get_db)) -> User:
-    client_code = generate_client_code()
-    while db.scalar(select(User).where(User.client_code == client_code)) is not None:
-        client_code = generate_client_code()
+@router.post("/enroll", response_model=UserResponse, status_code=201)
+def enroll(body: EnrollRequest, db: Session = Depends(get_db)) -> UserResponse:
+    user = enroll_user(db, body.display_name)
+    return UserResponse(user_id=user.id, display_name=user.display_name, client_code=user.client_code, status=user.status)
 
-    user = User(name=body.name, client_code=client_code, status="pending")
-    db.add(user)
-    db.flush()
-    audit(
-        db,
-        actor_type="system",
-        action="user_enrolled",
-        target_type="user",
-        target_id=user.id,
-        result="ok",
-        payload={"name": body.name, "client_code": client_code},
-    )
-    db.commit()
-    db.refresh(user)
-    return user
+
+@router.get("/me/{user_id}", response_model=UserResponse)
+def me(user_id: str, db: Session = Depends(get_db)) -> UserResponse:
+    user = get_user(db, user_id)
+    return UserResponse(user_id=user.id, display_name=user.display_name, client_code=user.client_code, status=user.status)

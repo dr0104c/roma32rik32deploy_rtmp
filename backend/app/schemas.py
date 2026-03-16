@@ -1,6 +1,16 @@
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody
 
 
 class HealthResponse(BaseModel):
@@ -8,90 +18,86 @@ class HealthResponse(BaseModel):
 
 
 class EnrollRequest(BaseModel):
-    name: str
+    display_name: str = Field(min_length=1, max_length=255)
 
 
-class UserSummary(BaseModel):
-    id: int
-    name: str
+class UserResponse(BaseModel):
+    user_id: str
+    display_name: str
     client_code: str
     status: str
 
-    model_config = ConfigDict(from_attributes=True)
+
+class AdminUserListResponse(BaseModel):
+    users: list[UserResponse]
 
 
-class EnrollResponse(UserSummary):
-    pass
-
-
-class ApproveUserResponse(BaseModel):
-    id: int
+class ChangeUserStatusResponse(BaseModel):
+    user_id: str
     status: str
-    approved_at: datetime | None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class BlockUserRequest(BaseModel):
-    reason: str
 
 
 class CreateStreamRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    playback_name: str = Field(min_length=1, max_length=128)
+
+
+class StreamResponse(BaseModel):
+    stream_id: str
     name: str
-
-
-class StreamSummary(BaseModel):
-    id: int
-    name: str
-    path_name: str
-    status: str
-    is_live: bool
-    last_publish_started_at: datetime | None
-    last_publish_stopped_at: datetime | None
-
-
-class StreamDetail(StreamSummary):
+    playback_name: str
     is_active: bool
+    ingest_key: str | None = None
 
 
-class CreateStreamResponse(BaseModel):
-    id: int
-    name: str
-    stream_key: str
-    path_name: str
-
-    model_config = ConfigDict(from_attributes=True)
+class StreamListResponse(BaseModel):
+    streams: list[StreamResponse]
 
 
-class GrantResponse(BaseModel):
-    user_id: int
-    stream_id: int
+class GrantUserRequest(BaseModel):
+    user_id: str
+
+
+class PermissionMutationResponse(BaseModel):
+    stream_id: str
+    user_id: str
     granted: bool
 
 
 class PlaybackTokenRequest(BaseModel):
-    user_id: int
-    stream_id: int
+    user_id: str
+    stream_id: str
 
 
 class PlaybackTokenResponse(BaseModel):
     token: str
-    expires_in: int
+    expires_at: datetime
+    playback_url: str
+
+
+class MediaAuthRequest(BaseModel):
+    action: str
+    path: str
+    protocol: str | None = None
+    query: str | None = None
+    ip: str | None = None
+    id: str | None = None
+    userAgent: str | None = None
 
 
 class ViewerSessionRequest(BaseModel):
-    client_code: str
+    client_code: str = Field(min_length=9, max_length=9)
 
 
 class ViewerSessionResponse(BaseModel):
     viewer_token: str | None = None
     expires_in: int | None = None
-    user: UserSummary
+    user: UserResponse
     detail: str | None = None
 
 
 class ViewerMeResponse(BaseModel):
-    user: UserSummary
+    user: UserResponse
 
 
 class ViewerConfigResponse(BaseModel):
@@ -105,32 +111,24 @@ class ViewerConfigResponse(BaseModel):
 
 
 class ViewerStreamsResponse(BaseModel):
-    streams: list[StreamSummary]
+    streams: list[dict[str, Any]]
 
 
-class PlaybackSessionTokenResponse(BaseModel):
+class ViewerPlaybackSessionResponse(BaseModel):
     playback_token: str
-    expires_in: int
-    stream: dict
-    playback: dict
+    expires_at: datetime
+    stream: dict[str, Any]
+    playback: dict[str, Any]
 
 
-class MediaMTXAuthRequest(BaseModel):
-    action: str
-    path: str
-    protocol: str | None = None
-    query: str | None = None
-    user: str | None = None
-    password: str | None = None
-    ip: str | None = None
-    id: str | None = None
-    userAgent: str | None = None
+class LegacyViewerSessionPayload(BaseModel):
+    client_code: str
 
 
-class MediaMTXEventRequest(BaseModel):
-    path: str
-    query: str | None = None
-    protocol: str | None = None
-    id: str | None = None
-    ip: str | None = None
-    userAgent: str | None = None
+class LegacyUserSummary(BaseModel):
+    id: str
+    name: str
+    client_code: str
+    status: str
+
+    model_config = ConfigDict(from_attributes=True)

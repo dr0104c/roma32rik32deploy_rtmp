@@ -1,72 +1,129 @@
-# Stream Platform Production Hardening Pack
+# Stream Platform Single-Node Deploy
 
-Single-operator production foundation for the existing streaming platform beta. This stage keeps the current backend, viewer API, web viewer site, MediaMTX, PostgreSQL, nginx, and coturn flow intact, and adds practical HTTPS, ACME, firewalling, host hardening, backup/restore, readiness checks, log rotation, and light observability.
+Production-like single-operator foundation for the streaming platform. The existing architecture is preserved:
 
-## Deployment Modes
+- ingest = RTMP
+- viewer delivery = WebRTC/WHEP
+- viewer access = backend-issued tokens
+- direct RTMP playback = disabled
+- stack = nginx + backend + postgres + MediaMTX + coturn
 
-Two public deployment modes are supported.
+No transcoder is included in this stack. The media server relays the ingested stream; it does not claim to transcode it.
 
-- HTTP bootstrap mode: `ENABLE_TLS=false`. The stack serves HTTP only and is useful for first bootstrap, internal testing, or environments without DNS.
-- HTTPS mode: `ENABLE_TLS=true`. The stack starts in HTTP bootstrap mode, obtains a Let's Encrypt certificate, switches nginx to TLS config, and serves the public site/API via HTTPS.
+## Backend MVP Domain
 
-## Domain Requirements
+The backend now includes a minimal domain layer for:
 
-For full HTTPS mode:
+- viewer enrollment
+- admin moderation
+- output stream registration
+- direct user permissions
+- prepared group permission tables
+- playback token issuance
+- internal media auth and ingest lifecycle events
 
-- `DOMAIN_NAME` must point to the VPS public IP
-- port `80/tcp` must be reachable for ACME HTTP-01
-- `ACME_EMAIL` must be set
-- `NGINX_HTTP_PORT=80`
-- `NGINX_HTTPS_PORT=443`
+Current persistent objects:
 
-## Core Components
+- `users`
+- `user_status_history`
+- `output_streams`
+- `ingest_sessions`
+- `stream_permissions_user`
+- `groups`
+- `group_members`
+- `stream_permissions_group`
+- `audit_logs`
 
-- `backend`: FastAPI admin/viewer/auth/lifecycle API
-- `postgres`: persistent state
-- `mediamtx`: RTMP ingest and WebRTC/WHEP
-- `coturn`: TURN/STUN relay
-- `nginx`: public static site, reverse proxy, TLS termination
+## API Endpoints
 
-## New Operational Files
+Public:
 
-- `deploy/bootstrap-secrets.sh`
-- `deploy/host-hardening.sh`
-- `deploy/firewall.sh`
-- `deploy/certbot-renew.sh`
-- `deploy/health-summary.sh`
-- `deploy/backup-postgres.sh`
-- `deploy/restore-postgres.sh`
-- `ops/systemd/*.service|*.timer`
-- `ops/fail2ban/jail.local.example`
-- `ops/logrotate/stream-platform`
+- `POST /api/v1/enroll`
+- `GET /api/v1/me/{user_id}`
+- `GET /api/v1/streams?user_id=...`
+- `POST /api/v1/playback-token`
 
-## Environment
+Admin, protected by `X-Admin-Secret`:
 
-Base env examples:
+- `GET /api/v1/admin/users?status=pending|approved|blocked|rejected`
+- `POST /api/v1/admin/users/{id}/approve`
+- `POST /api/v1/admin/users/{id}/reject`
+- `POST /api/v1/admin/users/{id}/block`
+- `POST /api/v1/admin/streams`
+- `GET /api/v1/admin/streams`
+- `POST /api/v1/admin/streams/{stream_id}/grant-user`
+- `POST /api/v1/admin/streams/{stream_id}/revoke-user`
 
-- `.env.example`: HTTP/bootstrap oriented
-- `.env.production.example`: production/TLS oriented
+Internal:
 
-Important variables:
+- `POST /internal/media/auth`
+- compatibility alias: `POST /internal/mediamtx/auth`
 
-- `DOMAIN_NAME`
-- `ACME_EMAIL`
-- `ENABLE_TLS`
-- `PUBLIC_BASE_URL`
-- `WEBRTC_PUBLIC_BASE_URL`
-- `TURN_EXTERNAL_IP`
-- `TURN_MIN_PORT`
-- `TURN_MAX_PORT`
-- `LOG_LEVEL`
-- `ACCESS_LOG_ENABLED`
-- `BACKUP_RETENTION`
-- `SSH_KEY_ONLY`
+Legacy helper endpoints for the lightweight web viewer are still present:
 
-`deploy/bootstrap-secrets.sh` creates `.env` when missing, generates strong secrets if placeholders remain, and enforces `0600`.
+- `POST /api/v1/viewer/session`
+- `GET /api/v1/viewer/me`
+- `GET /api/v1/viewer/config`
+- `GET /api/v1/viewer/streams`
+- `POST /api/v1/viewer/streams/{stream_id}/playback-session`
 
-## Deploy Flow
+## Auth Model
 
-For a completely clean host, you can use a single bootstrap script that pulls the project from GitLab and then runs the normal installer:
+- admin auth uses bootstrap shared secret `X-Admin-Secret`
+- playback auth uses short-lived JWT `scope=playback`
+- viewer helper auth uses short-lived JWT `scope=viewer`
+- internal media auth uses `INTERNAL_API_SECRET`
+
+This is still MVP auth. There is no full admin identity/RBAC system yet.
+
+## Playback Token Semantics
+
+Playback token is `HS256` JWT with:
+
+- `sub` = user id
+- `sid` = output stream id
+- `scope` = `playback`
+- `jti`
+- `iat`
+- `exp`
+
+Validation checks:
+
+- signature valid
+- token not expired
+- `scope=playback`
+- requested `playback_name` matches token `sid`
+- user still exists and is `approved`
+- permission still exists at validation time
+
+## User Lifecycle
+
+- `pending`: created by enroll
+- `approved`: can list streams and receive playback token
+- `rejected`: denied access
+- `blocked`: denied access
+
+Critical moderation actions are written to `user_status_history` and `audit_logs`.
+
+## Stream Lifecycle
+
+- admin creates stream with `playback_name` and `ingest_key`
+- publisher ingests to `rtmp://HOST:RTMP_PORT/live/{ingest_key}`
+- MediaMTX publish auth marks the matching `ingest_session` as `live`
+- publish stop marks it `offline`
+- viewers access `live/{playback_name}` only through WebRTC/WHEP token auth
+
+## Current MVP Limitations
+
+- no RTMPS ingest yet
+- no real admin identity provider yet
+- no transcoding or adaptive bitrate pipeline
+- group permission tables exist, but smoke currently exercises direct user grants
+- WHEP test is auth-path verification, not full browser playback automation
+
+## One-Command Deploy
+
+Clean Debian Bookworm VPS:
 
 ```bash
 curl -fsSL https://gitlab.roma32rik.ru/roman1/server_deploy/-/raw/main/bootstrap-install.sh -o bootstrap-install.sh
@@ -74,78 +131,158 @@ chmod +x bootstrap-install.sh
 sudo ./bootstrap-install.sh
 ```
 
-For a private repository, pass a token only for bootstrap:
+Local checkout on Debian Bookworm:
 
 ```bash
-sudo GITLAB_TOKEN=your_token_here ./bootstrap-install.sh
+sudo ./bootstrap-install.sh
 ```
 
-Run on Debian Bookworm:
+`bootstrap-install.sh` works in two modes:
 
-```bash
-chmod +x install.sh
-./install.sh
-```
+- local checkout mode: if `install.sh` and `deploy/install.sh` are рядом, it uses the local repository
+- bootstrap mode: if only the bootstrap script is present, it clones the repository into `/opt/stream-platform`
 
-Top-level `install.sh` is the single entrypoint for clean-system deployment and delegates to [`deploy/install.sh`](/home/debian/codex/2rev/deploy/install.sh).
+The deploy succeeds only if:
 
-`install.sh` now does:
+- packages are installed
+- docker stack is healthy
+- readiness checks pass
+- end-to-end smoke checks pass
+
+## Deployment Modes
+
+- HTTP bootstrap mode: `ENABLE_TLS=false`
+- HTTPS mode with ACME: `ENABLE_TLS=true`
+
+HTTPS mode requires:
+
+- `DOMAIN_NAME` pointing to the VPS
+- `ACME_EMAIL`
+- `NGINX_HTTP_PORT=80`
+- `NGINX_HTTPS_PORT=443`
+
+The installer starts nginx in HTTP bootstrap mode first, obtains the certificate, re-renders nginx runtime config, then switches public serving to HTTPS.
+
+## What Gets Installed
+
+The installer:
 
 1. validates Debian Bookworm
-2. installs base packages
+2. installs base packages including `curl`, `git`, `sudo`, `jq`, `ffmpeg`
 3. applies safe host hardening
-4. installs Docker and Compose
+4. installs Docker Engine and Docker Compose plugin
 5. syncs the project into `/opt/stream-platform`
-6. bootstraps `.env` and strong secrets
-7. validates production/TLS settings
-8. renders runtime configs for nginx, MediaMTX, and coturn
-9. starts the Docker stack
-10. applies SQL migrations
-11. if `ENABLE_TLS=true`, runs certbot and switches nginx to HTTPS mode
-12. applies firewall rules
-13. installs systemd timers and logrotate/fail2ban config
-14. waits for readiness
-15. runs smoke tests
-16. prints a health summary
+6. creates `.env` from `.env.example` if missing
+7. generates strong secrets for unset placeholder values
+8. enforces `chmod 600 /opt/stream-platform/.env`
+9. renders runtime configs for nginx, MediaMTX, and coturn
+10. starts the compose stack
+11. applies SQL migrations
+12. configures TLS if enabled
+13. applies firewall rules
+14. installs backup/cert-renew/health timers
+15. waits for actual readiness
+16. runs `deploy/e2e-smoke.sh`
+17. prints a final PASS/FAIL summary
 
-The flow is idempotent as far as practical for a single-node VPS.
+## Exact Ports
 
-## HTTPS Bootstrap And Cert Renew
+Default public ports:
 
-Initial HTTPS flow:
+- `8080/tcp` HTTP bootstrap nginx
+- `8443/tcp` HTTPS nginx
+- `1935/tcp` RTMP ingest
+- `3478/tcp,udp` TURN/STUN
+- `5349/tcp,udp` TURN TLS
+- `8189/tcp,udp` MediaMTX WebRTC ICE
+- `49160-49200/udp` TURN relay range
 
-1. Set `ENABLE_TLS=true`, `DOMAIN_NAME`, `ACME_EMAIL`
-2. `install.sh` starts nginx in HTTP bootstrap mode
-3. `deploy/certbot-renew.sh` performs first `certbot certonly --webroot`
-4. `install.sh` re-renders nginx active config from `nginx/conf.d/https.conf`
-5. nginx is restarted and begins serving TLS
+Internal-only:
+
+- postgres `5432`
+- backend `8000`
+- MediaMTX auth callbacks through backend `/internal/*`
+
+For full public HTTPS mode, set:
+
+- `NGINX_HTTP_PORT=80`
+- `NGINX_HTTPS_PORT=443`
+
+## Security And Media Semantics
+
+What is actually true in this stack:
+
+- ingest uses plain RTMP
+- plain RTMP ingest is not encrypted
+- direct RTMP playback is disabled
+- viewer playback goes through WebRTC/WHEP
+- WebRTC transport is encrypted when served through HTTPS/TLS
+- backend-issued playback tokens gate viewer playback
+- internal backend endpoints are denied from public nginx access
+
+What is not claimed:
+
+- no transcoding is performed
+- no claim that RTMP ingest is encrypted unless RTMPS is added later
+- no claim of full real-browser playback automation inside smoke tests
+
+## Smoke / E2E Verification
+
+Main smoke entrypoint:
+
+```bash
+cd /opt/stream-platform
+./deploy/e2e-smoke.sh
+```
+
+Compatibility wrapper:
+
+```bash
+cd /opt/stream-platform
+./deploy/smoke-test.sh
+```
+
+The e2e test verifies:
+
+- backend `/health`, `/health/live`, `/health/ready`
+- nginx serves the viewer site
+- enroll works
+- approve works
+- create stream works
+- direct user grant works
+- approved user stream listing works
+- playback token issuance works
+- internal media auth accepts valid playback token
+- invalid playback token is rejected
+- direct RTMP playback auth is denied
+- RTMP ingest works using generated `ffmpeg` test source
+- direct RTMP playback is denied
+
+WHEP verification is best-effort and honest:
+
+- it confirms the tokenized playback auth path works
+- it confirms invalid token is rejected
+- it does not claim full browser-rendered playback automation
+
+## HTTP Bootstrap And HTTPS Renewal
+
+Initial TLS flow:
+
+1. set `ENABLE_TLS=true`
+2. set `DOMAIN_NAME`
+3. set `ACME_EMAIL`
+4. run `sudo ./bootstrap-install.sh`
+5. nginx starts on HTTP
+6. `deploy/certbot-renew.sh` requests the certificate
+7. nginx switches to HTTPS runtime mode
 
 Renewal:
 
-- `stream-platform-cert-renew.timer` runs twice daily
-- `deploy/certbot-renew.sh` calls `certbot renew`
-- nginx is restarted after renew
+- `stream-platform-cert-renew.timer` runs automatically
+- `deploy/certbot-renew.sh` performs renew
+- nginx is reloaded after renewal
 
-## Firewall Ports
-
-The firewall script uses `ufw` and leaves open only:
-
-- SSH `SSH_PORT/tcp`
-- HTTP `NGINX_HTTP_PORT/tcp`
-- HTTPS `NGINX_HTTPS_PORT/tcp`
-- RTMP ingest `RTMP_PORT/tcp`
-- TURN `TURN_PORT/tcp,udp`
-- TURN TLS `TURN_TLS_PORT/tcp,udp`
-- MediaMTX ICE `WEBRTC_ICE_PORT/tcp,udp`
-- TURN relay range `TURN_MIN_PORT-TURN_MAX_PORT/udp`
-
-Not exposed:
-
-- PostgreSQL
-- backend internal HTTP port
-- internal callback paths
-
-## Backup/Restore
+## Backup / Restore
 
 Manual backup:
 
@@ -161,78 +298,51 @@ cd /opt/stream-platform
 ./deploy/restore-postgres.sh /var/backups/stream-platform/postgres/stream-platform-postgres-YYYYMMDDTHHMMSSZ.sql.gz
 ```
 
-Behavior:
-
-- backups are gzip-compressed SQL dumps
-- stored under `/var/backups/stream-platform/postgres`
-- retention is controlled by `BACKUP_RETENTION`
-- automated by `stream-platform-backup.timer`
-
-Persist these when rebuilding a VPS:
+Stored data to preserve across VPS rebuilds:
 
 - `/opt/stream-platform/.env`
 - `/opt/stream-platform/certs/letsencrypt`
-- PostgreSQL backups in `/var/backups/stream-platform/postgres`
-
-## Health Endpoints
-
-- `GET /health`: basic health
-- `GET /health/live`: process liveness
-- `GET /health/ready`: DB/config readiness
-
-Operational helper:
-
-```bash
-cd /opt/stream-platform
-./deploy/health-summary.sh
-```
-
-It prints:
-
-- container states
-- backend live/ready responses
-- disk usage
-- last service log errors
-- systemd timer state
-
-## Troubleshooting
-
-- nginx logs: `sudo docker logs stream-platform-nginx --tail 50`
-- backend logs: `sudo docker logs stream-platform-backend --tail 50`
-- MediaMTX logs: `sudo docker logs stream-platform-mediamtx --tail 50`
-- coturn logs: `sudo docker logs stream-platform-coturn --tail 50`
-- PostgreSQL logs: `sudo docker logs stream-platform-postgres --tail 50`
-- stack status: `sudo docker compose --env-file .env -f docker/compose.yml ps`
-- health summary: `./deploy/health-summary.sh`
-
-## Operational Checklist After Deploy
-
-- verify `/health/ready`
-- verify viewer site `/`
-- verify RTMP ingest
-- verify WHEP/WebRTC playback
-- verify backup timer: `systemctl status stream-platform-backup.timer`
-- verify cert renew timer when TLS enabled
-- verify `ufw status`
-- verify `.env` permissions are `600`
+- `/var/backups/stream-platform/postgres/*.sql.gz`
 
 ## Rebuilding A 7-Day VPS
 
-When the VPS is recreated:
+Recommended recovery flow:
 
-1. restore project files
-2. restore `.env`
-3. restore `certs/letsencrypt` if HTTPS is already issued
-4. restore latest PostgreSQL backup if state matters
-5. run `./deploy/install.sh`
+1. provision fresh Debian Bookworm VPS
+2. run bootstrap installer
+3. restore saved `.env`
+4. restore `certs/letsencrypt` if HTTPS certs already exist
+5. rerun `sudo ./bootstrap-install.sh`
+6. restore latest PostgreSQL backup if state matters
+7. rerun `./deploy/e2e-smoke.sh`
 
-## Android Viewer Preparation
+## Troubleshooting
 
-This stage still keeps the Android-facing backend path ready:
+Check status:
 
-- viewer session token flow
-- viewer config endpoint
-- stream list/detail endpoints
-- playback-session issuance
-- TURN/STUN configuration
-- lifecycle-aware stream state
+```bash
+cd /opt/stream-platform
+sudo docker compose --env-file .env -f docker/compose.yml ps
+./deploy/health-summary.sh
+```
+
+Short logs only:
+
+```bash
+sudo docker logs stream-platform-backend --tail 50
+sudo docker logs stream-platform-nginx --tail 50
+sudo docker logs stream-platform-mediamtx --tail 50
+sudo docker logs stream-platform-postgres --tail 50
+sudo docker logs stream-platform-coturn --tail 50
+```
+
+## Important Files
+
+- [`bootstrap-install.sh`](/home/debian/codex/2rev/bootstrap-install.sh)
+- [`install.sh`](/home/debian/codex/2rev/install.sh)
+- [`deploy/install.sh`](/home/debian/codex/2rev/deploy/install.sh)
+- [`deploy/e2e-smoke.sh`](/home/debian/codex/2rev/deploy/e2e-smoke.sh)
+- [`deploy/backup-postgres.sh`](/home/debian/codex/2rev/deploy/backup-postgres.sh)
+- [`deploy/restore-postgres.sh`](/home/debian/codex/2rev/deploy/restore-postgres.sh)
+- [`deploy/certbot-renew.sh`](/home/debian/codex/2rev/deploy/certbot-renew.sh)
+- [`docker/compose.yml`](/home/debian/codex/2rev/docker/compose.yml)

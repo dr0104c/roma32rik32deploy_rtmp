@@ -1,201 +1,95 @@
 import secrets
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
+from .config import get_settings
 from .db import get_db
-from .models import PlaybackSession
-from .schemas import MediaMTXAuthRequest, MediaMTXEventRequest
-from .services.playback import activate_playback_session, end_playback_session, validate_playback_token
-from .services.streams import (
-    audit,
-    get_stream_for_playback,
-    get_stream_for_publish,
-    record_publish_started,
-    record_publish_stopped,
-)
+from .errors import bad_request, unauthorized
+from .schemas import MediaAuthRequest
+from .services.audit import write_audit_log
+from .services.playback import validate_playback_token_for_path
+from .services.streams import get_stream_by_ingest_key, get_stream_by_playback_name, mark_ingest_started, mark_ingest_stopped
 
 
-router = APIRouter(prefix="/internal/mediamtx", tags=["mediamtx"])
+router = APIRouter(tags=["media"])
 
 
-def _extract_path_segment(path: str) -> str:
-    normalized = path.strip("/")
-    parts = normalized.split("/")
+def assert_internal_secret(secret: str) -> None:
+    settings = get_settings()
+    if not secrets.compare_digest(secret, settings.internal_api_secret):
+        raise unauthorized("internal_secret_invalid", "invalid internal secret")
+
+
+def parse_live_path(path: str) -> str:
+    value = path.strip("/")
+    parts = value.split("/")
     if len(parts) != 2 or parts[0] != "live" or not parts[1]:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid path")
+        raise bad_request("path_invalid", "invalid path")
     return parts[1]
 
 
-def _safe_payload(body: MediaMTXAuthRequest | MediaMTXEventRequest) -> dict:
-    payload = body.model_dump()
-    if payload.get("query"):
-        payload["query"] = "redacted"
-    if payload.get("password"):
-        payload["password"] = "redacted"
-    return payload
-
-
-def _assert_secret(secret: str) -> None:
-    from .config import get_settings
-
-    settings = get_settings()
-    if not secrets.compare_digest(secret, settings.internal_api_secret):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid internal secret")
-
-
-@router.post("/auth")
-def mediamtx_auth(body: MediaMTXAuthRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
-    _assert_secret(secret)
+def handle_media_auth(body: MediaAuthRequest, db: Session) -> dict[str, str]:
     action = body.action.lower()
     protocol = (body.protocol or "").lower()
-    ip = body.ip
-    user_agent = body.userAgent
+    segment = parse_live_path(body.path)
 
     if action == "publish":
-        segment = _extract_path_segment(body.path)
-        stream = get_stream_for_publish(db, segment)
-        if stream is None or not stream.is_active:
-            audit(
-                db,
-                actor_type="mediamtx",
-                action="publish_denied",
-                target_type="output_stream",
-                result="deny",
-                reason="stream_not_found",
-                payload=_safe_payload(body),
-                ip=ip,
-                user_agent=user_agent,
-            )
+        stream = get_stream_by_ingest_key(db, segment)
+        if stream is None:
+            write_audit_log(db, actor_type="media", action="publish_denied", target_type="output_stream", metadata={"reason": "ingest_key_invalid", "path": body.path})
             db.commit()
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stream not found")
-
-        record_publish_started(db, stream, source_name=protocol or None, ip=ip, user_agent=user_agent)
+            raise unauthorized("ingest_denied", "ingest denied")
+        mark_ingest_started(db, segment)
         return {"status": "ok"}
 
-    if action not in {"read", "playback"}:
-        audit(
-            db,
-            actor_type="mediamtx",
-            action="auth_denied",
-            target_type="output_stream",
-            result="deny",
-            reason="unsupported_action",
-            payload=_safe_payload(body),
-            ip=ip,
-            user_agent=user_agent,
-        )
+    if action in {"publish_stop", "unpublish"}:
+        mark_ingest_stopped(db, segment)
+        return {"status": "ok"}
+
+    if action != "read":
+        write_audit_log(db, actor_type="media", action="media_auth_denied", target_type="output_stream", metadata={"reason": "unsupported_action", "action": action})
         db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unsupported action")
+        raise unauthorized("media_action_invalid", "unsupported media action")
 
     if protocol == "rtmp":
-        audit(
-            db,
-            actor_type="mediamtx",
-            action="playback_denied",
-            target_type="output_stream",
-            result="deny",
-            reason="rtmp_playback_disabled",
-            payload=_safe_payload(body),
-            ip=ip,
-            user_agent=user_agent,
-        )
+        write_audit_log(db, actor_type="media", action="rtmp_playback_denied", target_type="output_stream", metadata={"path": body.path})
         db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="rtmp playback disabled")
+        raise unauthorized("rtmp_playback_disabled", "rtmp playback disabled")
 
     if protocol not in {"webrtc", "whep"}:
-        audit(
-            db,
-            actor_type="mediamtx",
-            action="playback_denied",
-            target_type="output_stream",
-            result="deny",
-            reason="unsupported_protocol",
-            payload=_safe_payload(body),
-            ip=ip,
-            user_agent=user_agent,
-        )
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unsupported playback protocol")
+        raise unauthorized("media_protocol_invalid", "unsupported playback protocol")
 
-    segment = _extract_path_segment(body.path)
-    stream = get_stream_for_playback(db, segment)
-    if stream is None or not stream.is_active:
-        audit(
-            db,
-            actor_type="mediamtx",
-            action="playback_denied",
-            target_type="output_stream",
-            result="deny",
-            reason="stream_not_found",
-            payload=_safe_payload(body),
-            ip=ip,
-            user_agent=user_agent,
-        )
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stream not found")
+    stream = get_stream_by_playback_name(db, segment)
+    if stream is None:
+        raise unauthorized("stream_not_found", "stream not found")
 
-    query = parse_qs(body.query or "", keep_blank_values=False)
-    token = query.get("token", [None])[0]
+    token = parse_qs(body.query or "").get("token", [None])[0]
     if not token:
-        audit(
-            db,
-            actor_type="mediamtx",
-            action="playback_denied",
-            target_type="output_stream",
-            target_id=stream.id,
-            result="deny",
-            reason="missing_playback_token",
-            payload=_safe_payload(body),
-            ip=ip,
-            user_agent=user_agent,
-        )
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing playback token")
+        raise unauthorized("playback_token_missing", "missing playback token")
 
-    expected_path = f"live/{stream.stream_key}"
-    try:
-        user, validated_stream, session, _ = validate_playback_token(db, token=token, expected_path=expected_path)
-    except HTTPException as exc:
-        session = db.scalar(select(PlaybackSession).where(PlaybackSession.jti == parse_qs(body.query or "").get("jti", [""])[0]))
-        if session is not None:
-            end_playback_session(db, session=session, stream=stream, ip=ip, user_agent=user_agent, result="deny", reason=exc.detail)
-        else:
-            audit(
-                db,
-                actor_type="mediamtx",
-                action="playback_denied",
-                target_type="output_stream",
-                target_id=stream.id,
-                result="deny",
-                reason=str(exc.detail),
-                ip=ip,
-                user_agent=user_agent,
-            )
-            db.commit()
-        raise
-
-    activate_playback_session(db, session=session, user=user, stream=validated_stream, ip=ip, user_agent=user_agent)
+    user, validated_stream = validate_playback_token_for_path(db, token=token, playback_name=segment)
+    write_audit_log(
+        db,
+        actor_type="media",
+        actor_id=user.id,
+        action="playback_authorized",
+        target_type="output_stream",
+        target_id=validated_stream.id,
+        metadata={"path": body.path, "protocol": protocol},
+    )
+    db.commit()
     return {"status": "ok"}
 
 
-@router.post("/publish-stop")
-def mediamtx_publish_stop(body: MediaMTXEventRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
-    _assert_secret(secret)
-    segment = _extract_path_segment(body.path)
-    stream = get_stream_for_publish(db, segment)
-    if stream is not None:
-        record_publish_stopped(db, stream, ip=body.ip, user_agent=body.userAgent)
-    return {"status": "ok"}
+@router.post("/internal/media/auth")
+def media_auth(body: MediaAuthRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
+    assert_internal_secret(secret)
+    return handle_media_auth(body, db)
 
 
-@router.post("/read-stop")
-def mediamtx_read_stop(body: MediaMTXEventRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
-    _assert_secret(secret)
-    segment = _extract_path_segment(body.path)
-    stream = get_stream_for_playback(db, segment)
-    session = db.scalar(select(PlaybackSession).order_by(desc(PlaybackSession.issued_at)))
-    end_playback_session(db, session=session, stream=stream, ip=body.ip, user_agent=body.userAgent)
-    return {"status": "ok"}
+@router.post("/internal/mediamtx/auth")
+def mediamtx_auth_compat(body: MediaAuthRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
+    assert_internal_secret(secret)
+    return handle_media_auth(body, db)

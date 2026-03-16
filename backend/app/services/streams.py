@@ -1,262 +1,108 @@
 import re
-import json
-import logging
-from datetime import UTC, datetime, timedelta
-from typing import Any
+from datetime import UTC, datetime
 
-from fastapi import HTTPException, status
-from sqlalchemy import Select, desc, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import generate_stream_key
-from ..config import get_settings
-from ..models import AuditLog, IngestSession, OutputStream, User, UserStreamGrant
+from ..auth import generate_ingest_key
+from ..errors import conflict, not_found
+from ..models import IngestSession, OutputStream
+from .audit import write_audit_log
 
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")
-logger = logging.getLogger("stream_platform.audit")
 
 
 def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
-def audit(
-    db: Session,
-    *,
-    actor_type: str,
-    action: str,
-    target_type: str,
-    actor_id: int | None = None,
-    target_id: int | None = None,
-    result: str | None = None,
-    reason: str | None = None,
-    payload: dict[str, Any] | None = None,
-    ip: str | None = None,
-    user_agent: str | None = None,
-) -> None:
-    event = {
-        "actor_type": actor_type,
-        "actor_id": actor_id,
-        "action": action,
-        "target_type": target_type,
-        "target_id": target_id,
-        "result": result,
-        "reason": reason,
-        "ip": ip,
-        "user_agent": user_agent,
-    }
-    if payload is not None:
-        event["payload"] = payload
-    logger.info(json.dumps(event, default=str, sort_keys=True))
-    db.add(
-        AuditLog(
-            actor_type=actor_type,
-            actor_id=actor_id,
-            action=action,
-            target_type=target_type,
-            target_id=target_id,
-            result=result,
-            reason=reason,
-            payload_json=payload,
-            ip=ip,
-            user_agent=user_agent,
-        )
-    )
+def slugify(value: str) -> str:
+    cleaned = SLUG_RE.sub("-", value.lower()).strip("-")
+    return cleaned or "stream"
 
 
-def slugify_stream_name(name: str) -> str:
-    value = SLUG_RE.sub("-", name.lower()).strip("-")
-    return value or "stream"
-
-
-def unique_path_name(db: Session, name: str) -> str:
-    base = slugify_stream_name(name)
-    candidate = base
-    index = 2
-    while db.scalar(select(OutputStream).where(OutputStream.path_name == candidate)) is not None:
-        candidate = f"{base}-{index}"
-        index += 1
+def unique_playback_name(db: Session, playback_name: str) -> str:
+    candidate = slugify(playback_name)
+    if db.scalar(select(OutputStream).where(OutputStream.playback_name == candidate)) is not None:
+        raise conflict("playback_name_exists", "playback_name already exists")
     return candidate
 
 
-def create_output_stream(db: Session, name: str) -> OutputStream:
-    stream_key = generate_stream_key()
-    while db.scalar(select(OutputStream).where(OutputStream.stream_key == stream_key)) is not None:
-        stream_key = generate_stream_key()
-
-    stream = OutputStream(
-        name=name,
-        stream_key=stream_key,
-        path_name=unique_path_name(db, name),
-        is_active=True,
-        status="offline",
-    )
+def create_stream(db: Session, name: str, playback_name: str) -> OutputStream:
+    candidate = unique_playback_name(db, playback_name)
+    ingest_key = generate_ingest_key()
+    while db.scalar(select(OutputStream).where(OutputStream.ingest_key == ingest_key)) is not None:
+        ingest_key = generate_ingest_key()
+    stream = OutputStream(name=name.strip(), playback_name=candidate, ingest_key=ingest_key, is_active=True)
     db.add(stream)
     db.flush()
-    audit(
+    write_audit_log(
         db,
         actor_type="admin",
+        actor_id="bootstrap-admin",
         action="stream_created",
         target_type="output_stream",
         target_id=stream.id,
-        result="ok",
-        payload={"name": name, "path_name": stream.path_name},
+        metadata={"name": stream.name, "playback_name": stream.playback_name},
     )
     db.commit()
     db.refresh(stream)
     return stream
 
 
-def grant_user_stream(db: Session, stream_id: int, user_id: int) -> None:
-    stream = db.get(OutputStream, stream_id)
-    user = db.get(User, user_id)
-    if stream is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="stream not found")
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
+def list_streams(db: Session) -> list[OutputStream]:
+    return list(db.scalars(select(OutputStream).order_by(OutputStream.created_at.desc())).all())
 
-    grant = db.scalar(
-        select(UserStreamGrant).where(
-            UserStreamGrant.user_id == user_id,
-            UserStreamGrant.output_stream_id == stream_id,
-        )
+
+def get_stream_by_ingest_key(db: Session, ingest_key: str) -> OutputStream | None:
+    return db.scalar(select(OutputStream).where(OutputStream.ingest_key == ingest_key, OutputStream.is_active.is_(True)))
+
+
+def get_stream_by_playback_name(db: Session, playback_name: str) -> OutputStream | None:
+    return db.scalar(select(OutputStream).where(OutputStream.playback_name == playback_name, OutputStream.is_active.is_(True)))
+
+
+def mark_ingest_started(db: Session, ingest_key: str) -> OutputStream:
+    stream = get_stream_by_ingest_key(db, ingest_key)
+    if stream is None:
+        raise not_found("stream_not_found", "stream not found")
+    now = utcnow()
+    session = IngestSession(output_stream_id=stream.id, ingest_key=ingest_key, status="live", last_seen_at=now)
+    db.add(session)
+    write_audit_log(
+        db,
+        actor_type="media",
+        action="ingest_started",
+        target_type="output_stream",
+        target_id=stream.id,
+        metadata={"ingest_key": ingest_key},
     )
-    if grant is None:
-        db.add(UserStreamGrant(user_id=user_id, output_stream_id=stream_id))
-        audit(
+    db.commit()
+    db.refresh(stream)
+    return stream
+
+
+def mark_ingest_stopped(db: Session, ingest_key: str) -> None:
+    session = db.scalar(
+        select(IngestSession).where(IngestSession.ingest_key == ingest_key).order_by(IngestSession.updated_at.desc())
+    )
+    if session is not None:
+        session.status = "offline"
+        session.last_seen_at = utcnow()
+        write_audit_log(
             db,
-            actor_type="admin",
-            action="stream_granted",
+            actor_type="media",
+            action="ingest_stopped",
             target_type="output_stream",
-            target_id=stream_id,
-            result="ok",
-            payload={"user_id": user_id},
+            target_id=session.output_stream_id,
+            metadata={"ingest_key": ingest_key},
         )
         db.commit()
 
 
-def get_stream_for_publish(db: Session, stream_key: str) -> OutputStream | None:
-    return db.scalar(select(OutputStream).where(OutputStream.stream_key == stream_key))
+def list_streams_for_user(db: Session, user_id: str) -> list[OutputStream]:
+    from .permissions import user_has_stream_access
 
-
-def get_stream_for_playback(db: Session, path_segment: str) -> OutputStream | None:
-    return db.scalar(
-        select(OutputStream).where(
-            (OutputStream.path_name == path_segment) | (OutputStream.stream_key == path_segment)
-        )
-    )
-
-
-def get_accessible_stream_query(user_id: int) -> Select[tuple[OutputStream]]:
-    return (
-        select(OutputStream)
-        .join(UserStreamGrant, UserStreamGrant.output_stream_id == OutputStream.id)
-        .where(UserStreamGrant.user_id == user_id, OutputStream.is_active.is_(True))
-        .order_by(OutputStream.name.asc())
-    )
-
-
-def refresh_stream_lifecycle(db: Session, stream: OutputStream) -> OutputStream:
-    settings = get_settings()
-    current_time = utcnow()
-
-    latest_ingest = db.scalar(
-        select(IngestSession)
-        .where(IngestSession.output_stream_id == stream.id)
-        .order_by(desc(IngestSession.created_at))
-    )
-
-    if latest_ingest and latest_ingest.status == "publishing":
-        heartbeat = latest_ingest.last_heartbeat_at or latest_ingest.started_at or latest_ingest.created_at
-        if heartbeat and current_time - heartbeat <= timedelta(seconds=settings.stream_stale_after_seconds):
-            stream.status = "live"
-            stream.last_seen_at = heartbeat
-        elif heartbeat and current_time - heartbeat <= timedelta(seconds=settings.stream_end_after_seconds):
-            stream.status = "stalled"
-            stream.last_seen_at = heartbeat
-        else:
-            latest_ingest.status = "ended"
-            latest_ingest.ended_at = current_time
-            stream.status = "ended"
-            stream.last_publish_stopped_at = current_time
-    elif stream.last_publish_stopped_at is not None:
-        if current_time - stream.last_publish_stopped_at > timedelta(seconds=settings.stream_end_after_seconds):
-            stream.status = "offline"
-        else:
-            stream.status = "ended"
-    else:
-        stream.status = "offline"
-
-    db.flush()
-    return stream
-
-
-def record_publish_started(
-    db: Session,
-    stream: OutputStream,
-    *,
-    source_name: str | None,
-    ip: str | None,
-    user_agent: str | None,
-) -> IngestSession:
-    current_time = utcnow()
-    session = IngestSession(
-        output_stream_id=stream.id,
-        ingest_key=stream.stream_key,
-        source_name=source_name,
-        status="publishing",
-        started_at=current_time,
-        last_heartbeat_at=current_time,
-    )
-    stream.status = "live"
-    stream.last_publish_started_at = current_time
-    stream.last_seen_at = current_time
-    db.add(session)
-    audit(
-        db,
-        actor_type="mediamtx",
-        action="publish_started",
-        target_type="output_stream",
-        target_id=stream.id,
-        result="ok",
-        payload={"source_name": source_name},
-        ip=ip,
-        user_agent=user_agent,
-    )
-    db.commit()
-    db.refresh(session)
-    return session
-
-
-def record_publish_stopped(
-    db: Session,
-    stream: OutputStream,
-    *,
-    ip: str | None,
-    user_agent: str | None,
-) -> None:
-    current_time = utcnow()
-    ingest = db.scalar(
-        select(IngestSession)
-        .where(IngestSession.output_stream_id == stream.id, IngestSession.status == "publishing")
-        .order_by(desc(IngestSession.created_at))
-    )
-    if ingest is not None:
-        ingest.status = "ended"
-        ingest.ended_at = current_time
-        ingest.last_heartbeat_at = current_time
-    stream.status = "ended"
-    stream.last_publish_stopped_at = current_time
-    stream.last_seen_at = current_time
-    audit(
-        db,
-        actor_type="mediamtx",
-        action="publish_stopped",
-        target_type="output_stream",
-        target_id=stream.id,
-        result="ok",
-        ip=ip,
-        user_agent=user_agent,
-    )
-    db.commit()
+    streams = list_streams(db)
+    return [stream for stream in streams if user_has_stream_access(db, user_id, stream.id)]

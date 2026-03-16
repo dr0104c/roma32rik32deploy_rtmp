@@ -1,15 +1,15 @@
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import jwt
-from fastapi import HTTPException, status
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import decode_jwt, generate_jti
 from ..config import get_settings
-from ..models import OutputStream, PlaybackSession, User, UserStreamGrant
-from .streams import audit
+from ..errors import forbidden, not_found, unauthorized
+from ..models import OutputStream, User
+from .audit import write_audit_log
+from .permissions import assert_user_has_stream_access
+from .streams import get_stream_by_playback_name
 
 
 def utcnow() -> datetime:
@@ -18,201 +18,74 @@ def utcnow() -> datetime:
 
 def create_viewer_token(user: User) -> tuple[str, int]:
     settings = get_settings()
-    now = utcnow()
     expires_in = settings.viewer_session_ttl_seconds
+    now = utcnow()
     payload = {
-        "sub": str(user.id),
-        "type": "viewer",
+        "sub": user.id,
+        "scope": "viewer",
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
-        "status_version": user.status_version,
     }
     token = jwt.encode(payload, settings.viewer_session_secret, algorithm="HS256")
     return token, expires_in
 
 
-def create_playback_session(
-    db: Session,
-    *,
-    user: User,
-    stream: OutputStream,
-    client_ip: str | None,
-    user_agent: str | None,
-) -> PlaybackSession:
+def issue_playback_token(db: Session, *, user_id: str, stream_id: str) -> tuple[str, datetime, str]:
+    user = db.get(User, user_id)
+    if user is None:
+        raise not_found("user_not_found", "user not found")
+    if user.status != "approved":
+        raise forbidden("user_not_approved", "user is not approved")
+
+    stream = db.get(OutputStream, stream_id)
+    if stream is None:
+        raise not_found("stream_not_found", "stream not found")
+
+    assert_user_has_stream_access(db, user_id, stream_id)
+
     settings = get_settings()
     now = utcnow()
     expires_at = now + timedelta(seconds=settings.playback_token_ttl_seconds)
-    session = PlaybackSession(
-        user_id=user.id,
-        output_stream_id=stream.id,
-        jti=generate_jti(),
-        status="issued",
-        client_ip=client_ip,
-        user_agent=user_agent,
-        issued_at=now,
-        expires_at=expires_at,
-    )
-    db.add(session)
-    db.flush()
-    audit(
-        db,
-        actor_type="user",
-        actor_id=user.id,
-        action="playback_session_issued",
-        target_type="output_stream",
-        target_id=stream.id,
-        result="ok",
-        payload={"jti": session.jti, "expires_at": expires_at.isoformat()},
-        ip=client_ip,
-        user_agent=user_agent,
-    )
-    db.commit()
-    db.refresh(session)
-    return session
-
-
-def create_playback_token(*, user: User, stream: OutputStream, session: PlaybackSession, path: str) -> tuple[str, int]:
-    settings = get_settings()
-    now = utcnow()
-    expires_in = settings.playback_token_ttl_seconds
+    jti = generate_jti()
     payload = {
-        "sub": str(user.id),
-        "stream_id": stream.id,
-        "type": "playback",
-        "jti": session.jti,
+        "sub": user.id,
+        "sid": stream.id,
+        "scope": "playback",
+        "jti": jti,
         "iat": int(now.timestamp()),
-        "exp": int((now + timedelta(seconds=expires_in)).timestamp()),
-        "path": path,
-        "status_version": user.status_version,
+        "exp": int(expires_at.timestamp()),
     }
     token = jwt.encode(payload, settings.playback_token_secret, algorithm="HS256")
-    return token, expires_in
-
-
-def require_stream_grant(db: Session, *, user_id: int, stream_id: int) -> OutputStream:
-    user = db.get(User, user_id)
-    stream = db.get(OutputStream, stream_id)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
-    if stream is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="stream not found")
-    if user.status != "approved":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"user status is {user.status}")
-
-    grant = db.scalar(
-        select(UserStreamGrant).where(
-            UserStreamGrant.user_id == user_id,
-            UserStreamGrant.output_stream_id == stream_id,
-        )
-    )
-    if grant is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="stream access is not granted")
-    return stream
-
-
-def validate_playback_token(
-    db: Session,
-    *,
-    token: str,
-    expected_path: str,
-) -> tuple[User, OutputStream, PlaybackSession, dict[str, Any]]:
-    settings = get_settings()
-    payload = decode_jwt(token, settings.playback_token_secret)
-    if payload.get("type") != "playback":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid playback token type")
-
-    user = db.get(User, int(payload["sub"]))
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="viewer not found")
-    if user.status != "approved":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"user status is {user.status}")
-    if int(payload.get("status_version", 0)) != user.status_version:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="playback token is stale")
-
-    stream = db.get(OutputStream, int(payload["stream_id"]))
-    if stream is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="stream not found")
-
-    if payload.get("path") != expected_path:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="playback path mismatch")
-
-    session = db.scalar(select(PlaybackSession).where(PlaybackSession.jti == payload["jti"]))
-    if session is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="playback session not found")
-    if session.status in {"revoked", "denied", "expired"}:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"playback session is {session.status}")
-    if session.revoked_at is not None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="playback session revoked")
-    if session.expires_at <= utcnow():
-        session.status = "expired"
-        db.commit()
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="playback session expired")
-
-    grant = db.scalar(
-        select(UserStreamGrant).where(
-            UserStreamGrant.user_id == user.id,
-            UserStreamGrant.output_stream_id == stream.id,
-        )
-    )
-    if grant is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="stream access is not granted")
-
-    return user, stream, session, payload
-
-
-def activate_playback_session(
-    db: Session,
-    *,
-    session: PlaybackSession,
-    user: User,
-    stream: OutputStream,
-    ip: str | None,
-    user_agent: str | None,
-) -> None:
-    now = utcnow()
-    if session.status != "active":
-        session.status = "active"
-        session.activated_at = now
-    audit(
+    write_audit_log(
         db,
-        actor_type="mediamtx",
+        actor_type="backend",
         actor_id=user.id,
-        action="playback_started",
+        action="playback_token_issued",
         target_type="output_stream",
         target_id=stream.id,
-        result="ok",
-        payload={"jti": session.jti},
-        ip=ip,
-        user_agent=user_agent,
+        metadata={"jti": jti, "expires_at": expires_at.isoformat()},
     )
     db.commit()
+    return token, expires_at, f"{settings.webrtc_public_base_url}/live/{stream.playback_name}/whep?token={token}"
 
 
-def end_playback_session(
-    db: Session,
-    *,
-    session: PlaybackSession | None,
-    stream: OutputStream | None,
-    ip: str | None,
-    user_agent: str | None,
-    result: str = "ok",
-    reason: str | None = None,
-) -> None:
-    now = utcnow()
-    if session is not None and session.status not in {"ended", "revoked", "expired"}:
-        session.status = "ended"
-        session.ended_at = now
-    audit(
-        db,
-        actor_type="mediamtx",
-        actor_id=session.user_id if session else None,
-        action="playback_stopped",
-        target_type="output_stream",
-        target_id=stream.id if stream else None,
-        result=result,
-        reason=reason,
-        payload={"jti": session.jti} if session else None,
-        ip=ip,
-        user_agent=user_agent,
-    )
-    db.commit()
+def validate_playback_token_for_path(db: Session, *, token: str, playback_name: str) -> tuple[User, OutputStream]:
+    settings = get_settings()
+    payload = decode_jwt(token, settings.playback_token_secret)
+    if payload.get("scope") != "playback":
+        raise unauthorized("playback_scope_invalid", "invalid playback scope")
+
+    user = db.get(User, payload.get("sub"))
+    if user is None:
+        raise unauthorized("user_not_found", "user not found")
+    if user.status != "approved":
+        raise forbidden("user_not_approved", "user is not approved")
+
+    stream = db.get(OutputStream, payload.get("sid"))
+    if stream is None:
+        raise unauthorized("stream_not_found", "stream not found")
+    if get_stream_by_playback_name(db, playback_name) is None or stream.playback_name != playback_name:
+        raise unauthorized("playback_path_mismatch", "requested stream does not match token")
+
+    assert_user_has_stream_access(db, user.id, stream.id)
+    return user, stream

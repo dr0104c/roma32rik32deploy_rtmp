@@ -1,114 +1,64 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from ..auth import require_viewer_user
 from ..db import get_db
 from ..models import User
-from ..schemas import (
-    PlaybackSessionTokenResponse,
-    UserSummary,
-    ViewerConfigResponse,
-    ViewerMeResponse,
-    ViewerSessionRequest,
-    ViewerSessionResponse,
-    ViewerStreamsResponse,
-)
-from ..services.playback import create_playback_session, create_playback_token, create_viewer_token, require_stream_grant
-from ..services.streams import audit
-from ..services.viewer import get_viewer_stream, list_viewer_streams, viewer_config
+from ..schemas import ViewerConfigResponse, ViewerMeResponse, ViewerSessionRequest, ViewerSessionResponse, ViewerStreamsResponse, ViewerPlaybackSessionResponse
+from ..services.playback import create_viewer_token, issue_playback_token
+from ..services.viewer import get_user, get_user_by_client_code, list_user_stream_payloads, viewer_config
 
 
 router = APIRouter(prefix="/api/v1/viewer", tags=["viewer"])
 
 
-@router.post("/session", response_model=ViewerSessionResponse)
-def create_viewer_session(body: ViewerSessionRequest, request: Request, db: Session = Depends(get_db)) -> ViewerSessionResponse:
-    user = db.scalar(select(User).where(User.client_code == body.client_code.strip().upper()))
-    if user is None:
-        raise HTTPException(status_code=404, detail="user not found")
-    if user.status != "approved":
-        audit(
-            db,
-            actor_type="viewer",
-            actor_id=user.id,
-            action="viewer_session_denied",
-            target_type="user",
-            target_id=user.id,
-            result="deny",
-            reason=user.status,
-            ip=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent"),
-        )
-        db.commit()
-        return ViewerSessionResponse(
-            user=UserSummary.model_validate(user),
-            detail=user.blocked_reason or f"user status is {user.status}",
-        )
+def to_user_payload(user: User) -> dict[str, str]:
+    return {"user_id": user.id, "display_name": user.display_name, "client_code": user.client_code, "status": user.status}
 
-    viewer_token, expires_in = create_viewer_token(user)
-    audit(
-        db,
-        actor_type="viewer",
-        actor_id=user.id,
-        action="viewer_session_issued",
-        target_type="user",
-        target_id=user.id,
-        result="ok",
-        ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-    )
-    db.commit()
-    return ViewerSessionResponse(
-        viewer_token=viewer_token,
-        expires_in=expires_in,
-        user=UserSummary.model_validate(user),
-    )
+
+@router.post("/session", response_model=ViewerSessionResponse)
+def viewer_session(body: ViewerSessionRequest, db: Session = Depends(get_db)) -> ViewerSessionResponse:
+    user = get_user_by_client_code(db, body.client_code)
+    if user is None:
+        return ViewerSessionResponse(user={"user_id": "", "display_name": "", "client_code": body.client_code, "status": "missing"}, detail="user not found")
+    if user.status != "approved":
+        return ViewerSessionResponse(user=to_user_payload(user), detail=f"user status is {user.status}")
+    token, expires_in = create_viewer_token(user)
+    return ViewerSessionResponse(viewer_token=token, expires_in=expires_in, user=to_user_payload(user))
 
 
 @router.get("/me", response_model=ViewerMeResponse)
 def viewer_me(user: User = Depends(require_viewer_user)) -> ViewerMeResponse:
-    return ViewerMeResponse(user=UserSummary.model_validate(user))
+    return ViewerMeResponse(user=to_user_payload(user))
+
+
+@router.get("/me/{user_id}", response_model=ViewerMeResponse)
+def viewer_me_by_id(user_id: str, db: Session = Depends(get_db)) -> ViewerMeResponse:
+    user = get_user(db, user_id)
+    return ViewerMeResponse(user=to_user_payload(user))
 
 
 @router.get("/config", response_model=ViewerConfigResponse)
-def config(_: User = Depends(require_viewer_user)) -> ViewerConfigResponse:
+def config() -> ViewerConfigResponse:
     return ViewerConfigResponse(**viewer_config())
 
 
 @router.get("/streams", response_model=ViewerStreamsResponse)
-def streams(user: User = Depends(require_viewer_user), db: Session = Depends(get_db)) -> ViewerStreamsResponse:
-    items = list_viewer_streams(db, user_id=user.id)
-    db.commit()
-    return ViewerStreamsResponse(streams=items)
+def viewer_streams(user: User = Depends(require_viewer_user), db: Session = Depends(get_db)) -> ViewerStreamsResponse:
+    return ViewerStreamsResponse(streams=list_user_stream_payloads(db, user.id))
 
 
-@router.get("/streams/{stream_id}")
-def stream_detail(stream_id: int, user: User = Depends(require_viewer_user), db: Session = Depends(get_db)):
-    detail = get_viewer_stream(db, user_id=user.id, stream_id=stream_id)
-    return detail
+@router.get("/streams/{user_id}", response_model=ViewerStreamsResponse)
+def viewer_streams_by_user_id(user_id: str, db: Session = Depends(get_db)) -> ViewerStreamsResponse:
+    return ViewerStreamsResponse(streams=list_user_stream_payloads(db, user_id))
 
 
-@router.post("/streams/{stream_id}/playback-session", response_model=PlaybackSessionTokenResponse)
-def playback_session(
-    stream_id: int,
-    request: Request,
-    user: User = Depends(require_viewer_user),
-    db: Session = Depends(get_db),
-) -> PlaybackSessionTokenResponse:
-    stream = require_stream_grant(db, user_id=user.id, stream_id=stream_id)
-    media_path = f"live/{stream.stream_key}"
-    session = create_playback_session(
-        db,
-        user=user,
-        stream=stream,
-        client_ip=request.client.host if request.client else None,
-        user_agent=request.headers.get("user-agent"),
-    )
-    token, expires_in = create_playback_token(user=user, stream=stream, session=session, path=media_path)
-    return PlaybackSessionTokenResponse(
+@router.post("/streams/{stream_id}/playback-session", response_model=ViewerPlaybackSessionResponse)
+def viewer_playback_session(stream_id: str, user: User = Depends(require_viewer_user), db: Session = Depends(get_db)) -> ViewerPlaybackSessionResponse:
+    token, expires_at, playback_url = issue_playback_token(db, user_id=user.id, stream_id=stream_id)
+    return ViewerPlaybackSessionResponse(
         playback_token=token,
-        expires_in=expires_in,
-        stream={"id": stream.id, "name": stream.name, "path_name": stream.path_name},
-        playback={"webrtc_url": f"{viewer_config()['webrtc_base_url']}/{media_path}/whep?token={token}"},
+        expires_at=expires_at,
+        stream={"id": stream_id},
+        playback={"webrtc_url": playback_url},
     )

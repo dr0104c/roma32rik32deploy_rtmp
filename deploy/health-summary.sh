@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -7,10 +7,14 @@ LOG_DIR="/var/log/stream-platform"
 
 # shellcheck source=deploy/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+setup_trap
 
-sudo mkdir -p "${LOG_DIR}"
-sudo touch "${LOG_DIR}/health-summary.log"
-sudo chown "${USER}:${USER}" "${LOG_DIR}/health-summary.log"
+run_as_root mkdir -p "${LOG_DIR}"
+run_as_root touch "${LOG_DIR}/health-summary.log"
+if [[ -n "${SUDO_USER:-}" ]]; then
+  run_as_root chown "${SUDO_USER}:${SUDO_USER}" "${LOG_DIR}/health-summary.log"
+fi
+
 cd "${PROJECT_ROOT}"
 set -a
 source .env
@@ -24,20 +28,20 @@ if [[ "${ENABLE_TLS}" == "true" && -n "${DOMAIN_NAME}" && -f "${PROJECT_ROOT}/ce
 fi
 
 {
-  log "container status"
+  info "container status"
   compose ps
-  log "backend live"
+  info "backend live"
   curl -fsS "${curl_opts[@]}" "${base_url}/health/live" || true
   echo
-  log "backend ready"
+  info "backend ready"
   curl -fsS "${curl_opts[@]}" "${base_url}/health/ready" || true
   echo
-  log "disk usage"
+  info "disk usage"
   df -h /
   for service in backend nginx mediamtx postgres coturn; do
-    log "last errors for ${service}"
-    docker_host logs "stream-platform-${service}" --tail 20 2>&1 | tail -n 20
+    info "last log lines for ${service}"
+    docker_host logs "stream-platform-${service}" --tail 20 2>&1
   done
-  log "systemd timers"
+  info "systemd timers"
   systemctl list-timers --all 'stream-platform-*' || true
 } | tee -a "${LOG_DIR}/health-summary.log"

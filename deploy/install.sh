@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -7,6 +7,27 @@ TARGET_ROOT="/opt/stream-platform"
 
 # shellcheck source=deploy/lib.sh
 source "${SCRIPT_DIR}/lib.sh"
+setup_trap
+
+SUMMARY_LINES=()
+
+record_pass() {
+  SUMMARY_LINES+=("[PASS] $*")
+  pass "$*"
+}
+
+record_fail() {
+  SUMMARY_LINES+=("[FAIL] $*")
+  fail_line "$*"
+}
+
+print_summary() {
+  printf '\n=== Deploy Summary ===\n'
+  local line
+  for line in "${SUMMARY_LINES[@]}"; do
+    printf '%s\n' "${line}"
+  done
+}
 
 ensure_bookworm() {
   . /etc/os-release
@@ -15,41 +36,48 @@ ensure_bookworm() {
 }
 
 install_base_packages() {
-  sudo apt-get update
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq ffmpeg rsync lsb-release
+  info "installing base packages"
+  run_as_root apt-get update
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq ffmpeg rsync lsb-release sudo
 }
 
 install_docker() {
+  info "installing docker and compose"
   if ! command -v docker >/dev/null 2>&1; then
-    sudo install -m 0755 -d /etc/apt/keyrings
+    run_as_root install -m 0755 -d /etc/apt/keyrings
     if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
-      curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      sudo chmod a+r /etc/apt/keyrings/docker.gpg
+      curl -fsSL https://download.docker.com/linux/debian/gpg | run_as_root gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      run_as_root chmod a+r /etc/apt/keyrings/docker.gpg
     fi
     if [[ ! -f /etc/apt/sources.list.d/docker.list ]]; then
       echo \
         "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-        ${VERSION_CODENAME} stable" | sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+        ${VERSION_CODENAME} stable" | run_as_root tee /etc/apt/sources.list.d/docker.list >/dev/null
     fi
-    sudo apt-get update
+    run_as_root apt-get update
   fi
 
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-  sudo systemctl enable --now docker
-  sudo usermod -aG docker "${USER}"
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  run_as_root systemctl enable --now docker
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    run_as_root usermod -aG docker "${SUDO_USER}" || true
+  fi
 }
 
 sync_project() {
-  sudo mkdir -p "${TARGET_ROOT}"
+  info "syncing project into ${TARGET_ROOT}"
+  run_as_root mkdir -p "${TARGET_ROOT}"
   if [[ "${SOURCE_ROOT}" != "${TARGET_ROOT}" ]]; then
-    sudo rsync -a --delete \
+    run_as_root rsync -a --delete \
       --exclude '.git' \
       --exclude '.env' \
       --exclude '__pycache__' \
       "${SOURCE_ROOT}/" "${TARGET_ROOT}/"
   fi
-  sudo chown -R "${USER}:${USER}" "${TARGET_ROOT}"
-  chmod +x "${TARGET_ROOT}"/deploy/*.sh
+  if [[ -n "${SUDO_USER:-}" ]]; then
+    run_as_root chown -R "${SUDO_USER}:${SUDO_USER}" "${TARGET_ROOT}"
+  fi
+  chmod +x "${TARGET_ROOT}"/deploy/*.sh "${TARGET_ROOT}/install.sh" "${TARGET_ROOT}/bootstrap-install.sh"
 }
 
 validate_production_env() {
@@ -74,6 +102,7 @@ validate_production_env() {
     [[ "${https_port}" == "443" ]] || fail "ENABLE_TLS=true requires NGINX_HTTPS_PORT=443"
   fi
 
+  local item
   for item in "${admin_secret}" "${playback_secret}" "${viewer_secret}" "${internal_secret}" "${pg_password}" "${turn_secret}"; do
     [[ "${#item}" -ge 24 ]] || fail "detected weak secret in .env"
     [[ ! "${item}" =~ ^(change-me|REPLACE_STRONG_SECRET|example.com)$ ]] || fail "detected placeholder secret in .env"
@@ -81,14 +110,13 @@ validate_production_env() {
 }
 
 bootstrap_env() {
+  info "bootstrapping environment"
   cd "${TARGET_ROOT}"
   local template=".env.example"
-  if [[ ! -f .env ]]; then
-    cp "${template}" .env
-  fi
+  [[ -f .env ]] || cp "${template}" .env
   ./deploy/bootstrap-secrets.sh "${TARGET_ROOT}/.env" "${TARGET_ROOT}/${template}"
 
-  local detected_host
+  local detected_host pg_password postgres_user postgres_db enable_tls domain_name public_base_url webrtc_public_base_url stun_urls turn_urls http_port
   detected_host="$(hostname -I | awk '{print $1}')"
   [[ -n "${detected_host}" ]] || detected_host="127.0.0.1"
 
@@ -111,12 +139,12 @@ bootstrap_env() {
   grep -q '^SSH_KEY_ONLY=' .env || echo 'SSH_KEY_ONLY=false' >> .env
   grep -q '^NGINX_HTTPS_PORT=' .env || echo 'NGINX_HTTPS_PORT=8443' >> .env
 
-  local pg_password postgres_user postgres_db enable_tls domain_name public_base_url webrtc_public_base_url stun_urls turn_urls
   pg_password="$(env_get POSTGRES_PASSWORD .env)"
   postgres_user="$(env_get POSTGRES_USER .env)"
   postgres_db="$(env_get POSTGRES_DB .env)"
   enable_tls="$(env_get ENABLE_TLS .env)"
   domain_name="$(env_get DOMAIN_NAME .env)"
+  http_port="$(env_get NGINX_HTTP_PORT .env)"
 
   if [[ "${enable_tls}" == "true" && -n "${domain_name}" ]]; then
     public_base_url="https://${domain_name}"
@@ -124,8 +152,6 @@ bootstrap_env() {
     stun_urls="stun:${domain_name}:3478"
     turn_urls="turn:${domain_name}:3478?transport=udp,turn:${domain_name}:3478?transport=tcp"
   else
-    local http_port
-    http_port="$(env_get NGINX_HTTP_PORT .env)"
     public_base_url="http://${detected_host}:${http_port}"
     webrtc_public_base_url="http://${detected_host}:${http_port}/webrtc"
     stun_urls="stun:${detected_host}:3478"
@@ -138,7 +164,6 @@ bootstrap_env() {
   sed -i "s|^WEBRTC_PUBLIC_BASE_URL=.*$|WEBRTC_PUBLIC_BASE_URL=${webrtc_public_base_url}|" .env
   sed -i "s|^STUN_URLS=.*$|STUN_URLS=${stun_urls}|" .env
   sed -i "s|^TURN_URLS=.*$|TURN_URLS=${turn_urls}|" .env
-
   chmod 600 .env
   validate_production_env
 }
@@ -162,9 +187,10 @@ render_nginx_mode() {
 }
 
 render_runtime_configs() {
+  info "rendering runtime configs"
   cd "${TARGET_ROOT}"
   mkdir -p certs/letsencrypt nginx/certbot/www
-  sudo mkdir -p /var/log/stream-platform
+  run_as_root mkdir -p /var/log/stream-platform
   set -a
   source .env
   set +a
@@ -187,23 +213,71 @@ render_runtime_configs() {
   render_nginx_mode
 }
 
+start_stack() {
+  info "starting docker compose stack"
+  cd "${TARGET_ROOT}"
+  compose up -d --build
+}
+
 run_db_migrations() {
+  info "applying database migrations"
   cd "${TARGET_ROOT}"
   local pg_user pg_db
   pg_user="$(env_get POSTGRES_USER .env)"
   pg_db="$(env_get POSTGRES_DB .env)"
-  compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user}" -d "${pg_db}" < sql/003_server_beta.sql
+  local migration
+  local ordered_migrations=()
+  [[ -f sql/003_server_beta.sql ]] && ordered_migrations+=("sql/003_server_beta.sql")
+  [[ -f sql/001_init.sql ]] && ordered_migrations+=("sql/001_init.sql")
+  [[ -f sql/002_seed.sql ]] && ordered_migrations+=("sql/002_seed.sql")
+  for migration in "${ordered_migrations[@]}"; do
+    compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user}" -d "${pg_db}" < "${migration}"
+  done
 }
 
-start_stack() {
+setup_tls() {
   cd "${TARGET_ROOT}"
-  compose up -d --build
+  if [[ "$(env_get ENABLE_TLS .env)" != "true" ]]; then
+    info "tls disabled; staying in http bootstrap mode"
+    return 0
+  fi
+
+  info "obtaining or renewing TLS certificate"
+  ./deploy/certbot-renew.sh
+  render_nginx_mode
   compose restart nginx
 }
 
-wait_ready() {
+install_ops_files() {
+  info "installing operational support files"
   cd "${TARGET_ROOT}"
-  local scheme host port curl_opts=()
+  run_as_root install -d -m 0755 /var/log/stream-platform
+  run_as_root install -d -m 0755 /etc/fail2ban/jail.d
+  run_as_root install -m 0644 ops/fail2ban/jail.local.example /etc/fail2ban/jail.d/stream-platform.local
+  run_as_root install -m 0644 ops/logrotate/stream-platform /etc/logrotate.d/stream-platform
+
+  install_systemd_unit ops/systemd/stream-platform-backup.service
+  install_systemd_unit ops/systemd/stream-platform-backup.timer
+  install_systemd_unit ops/systemd/stream-platform-cert-renew.service
+  install_systemd_unit ops/systemd/stream-platform-cert-renew.timer
+  install_systemd_unit ops/systemd/stream-platform-healthcheck.service
+  install_systemd_unit ops/systemd/stream-platform-healthcheck.timer
+  run_as_root systemctl daemon-reload
+  run_as_root systemctl enable --now \
+    stream-platform-backup.timer \
+    stream-platform-cert-renew.timer \
+    stream-platform-healthcheck.timer
+  run_as_root systemctl restart fail2ban
+}
+
+wait_ready() {
+  info "waiting for stack readiness"
+  cd "${TARGET_ROOT}"
+  wait_for_compose_service postgres running 60 2 || fail "postgres did not become running"
+  wait_for_compose_service backend running 60 2 || fail "backend did not become running"
+  wait_for_compose_service nginx running 60 2 || fail "nginx did not become running"
+
+  local scheme host port curl_opts=() url
   if [[ "$(env_get ENABLE_TLS .env)" == "true" && -f "${TARGET_ROOT}/certs/letsencrypt/live/$(env_get DOMAIN_NAME .env)/fullchain.pem" ]]; then
     scheme="https"
     host="$(env_get DOMAIN_NAME .env)"
@@ -214,11 +288,12 @@ wait_ready() {
     host="127.0.0.1"
     port="$(env_get NGINX_HTTP_PORT .env)"
   fi
+  url="${scheme}://${host}:${port}/health/ready"
 
-  local url="${scheme}://${host}:${port}/health/ready"
   local i
   for i in $(seq 1 90); do
     if curl -fsS "${curl_opts[@]}" "${url}" >/dev/null 2>&1; then
+      success "backend readiness endpoint is healthy"
       return 0
     fi
     sleep 2
@@ -226,67 +301,72 @@ wait_ready() {
   fail "backend readiness check did not become ready"
 }
 
-setup_tls() {
-  cd "${TARGET_ROOT}"
-  if [[ "$(env_get ENABLE_TLS .env)" != "true" ]]; then
-    log "tls disabled; staying in http bootstrap mode"
-    return 0
-  fi
-
-  ./deploy/certbot-renew.sh
-  render_nginx_mode
-  compose restart nginx
-}
-
-install_ops_files() {
-  cd "${TARGET_ROOT}"
-  sudo install -d -m 0755 /var/log/stream-platform
-  sudo install -d -m 0755 /etc/fail2ban/jail.d
-  sudo install -m 0644 ops/fail2ban/jail.local.example /etc/fail2ban/jail.d/stream-platform.local
-  sudo install -m 0644 ops/logrotate/stream-platform /etc/logrotate.d/stream-platform
-
-  install_systemd_unit ops/systemd/stream-platform-backup.service
-  install_systemd_unit ops/systemd/stream-platform-backup.timer
-  install_systemd_unit ops/systemd/stream-platform-cert-renew.service
-  install_systemd_unit ops/systemd/stream-platform-cert-renew.timer
-  install_systemd_unit ops/systemd/stream-platform-healthcheck.service
-  install_systemd_unit ops/systemd/stream-platform-healthcheck.timer
-  sudo systemctl daemon-reload
-  sudo systemctl enable --now \
-    stream-platform-backup.timer \
-    stream-platform-cert-renew.timer \
-    stream-platform-healthcheck.timer
-  sudo systemctl restart fail2ban
-}
-
 run_smoke_tests() {
+  info "running end-to-end smoke checks"
   cd "${TARGET_ROOT}"
-  ./deploy/smoke-test.sh
+  ./deploy/e2e-smoke.sh
 }
 
 final_summary() {
+  info "printing operational summary"
   cd "${TARGET_ROOT}"
   ./deploy/health-summary.sh || true
 }
 
 main() {
   ensure_bookworm
+  record_pass "Debian Bookworm detected"
+
   install_base_packages
-  ./deploy/host-hardening.sh "${TARGET_ROOT}/.env" || true
+  record_pass "base packages installed"
+
+  if ./deploy/host-hardening.sh "${TARGET_ROOT}/.env"; then
+    record_pass "pre-sync host hardening applied safely"
+  else
+    warn "pre-sync host hardening was skipped"
+  fi
+
   install_docker
+  record_pass "docker and compose installed"
+
   sync_project
+  record_pass "project synchronized to ${TARGET_ROOT}"
+
   bootstrap_env
+  record_pass ".env prepared with strong secrets and 0600 permissions"
+
   ./deploy/host-hardening.sh "${TARGET_ROOT}/.env"
+  record_pass "host hardening applied with final env"
+
   render_runtime_configs
+  record_pass "runtime configs rendered"
+
   start_stack
+  record_pass "docker compose stack started"
+
   run_db_migrations
+  record_pass "database migrations applied"
+
   setup_tls
+  record_pass "tls/bootstrap mode configured"
+
   ./deploy/firewall.sh "${TARGET_ROOT}/.env"
+  record_pass "firewall applied"
+
   install_ops_files
+  record_pass "systemd timers and ops files installed"
+
   wait_ready
+  record_pass "stack readiness confirmed"
+
   run_smoke_tests
+  record_pass "end-to-end smoke test passed"
+
   final_summary
-  log "deploy completed successfully"
+  record_pass "final health summary generated"
+
+  print_summary
+  success "deploy completed successfully"
 }
 
 main "$@"
