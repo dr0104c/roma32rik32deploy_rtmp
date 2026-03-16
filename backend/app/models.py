@@ -73,14 +73,18 @@ class OutputStream(Base, TimestampMixin):
 class IngestSession(Base):
     __tablename__ = "ingest_sessions"
     __table_args__ = (
-        CheckConstraint("status IN ('created','live','offline','revoked')", name="ck_ingest_sessions_status"),
+        CheckConstraint("status IN ('created','connecting','live','offline','revoked','error')", name="ck_ingest_sessions_status"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
     output_stream_id: Mapped[str | None] = mapped_column(ForeignKey("output_streams.id", ondelete="SET NULL"))
     ingest_key: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="created", server_default="created")
+    publisher_label: Mapped[str | None] = mapped_column(String(255))
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_publish_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_publish_stopped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -64,6 +64,38 @@ class PermissionMutationResponse(BaseModel):
     granted: bool
 
 
+class CreateIngestSessionRequest(BaseModel):
+    output_stream_id: str
+    publisher_label: str | None = Field(default=None, max_length=255)
+
+
+class RotateIngestKeyResponse(BaseModel):
+    ingest_session_id: str
+    ingest_key: str
+    status: str
+
+
+class RevokeIngestSessionResponse(BaseModel):
+    ingest_session_id: str
+    status: str
+
+
+class IngestSessionResponse(BaseModel):
+    ingest_session_id: str
+    output_stream_id: str | None
+    ingest_key: str
+    status: str
+    publisher_label: str | None
+    last_seen_at: datetime | None
+    last_publish_started_at: datetime | None
+    last_publish_stopped_at: datetime | None
+    last_error: str | None
+
+
+class IngestSessionListResponse(BaseModel):
+    ingest_sessions: list[IngestSessionResponse]
+
+
 class PlaybackTokenRequest(BaseModel):
     user_id: str
     stream_id: str
@@ -80,6 +112,14 @@ class MediaAuthRequest(BaseModel):
     path: str
     protocol: str | None = None
     query: str | None = None
+    ip: str | None = None
+    id: str | None = None
+    userAgent: str | None = None
+
+
+class MediaEventRequest(BaseModel):
+    path: str
+    protocol: str | None = None
     ip: str | None = None
     id: str | None = None
     userAgent: str | None = None

@@ -51,11 +51,26 @@ CREATE TABLE IF NOT EXISTS ingest_sessions (
     id VARCHAR(36) PRIMARY KEY,
     output_stream_id VARCHAR(36) NULL REFERENCES output_streams(id) ON DELETE SET NULL,
     ingest_key VARCHAR(64) NOT NULL,
-    status VARCHAR(16) NOT NULL CHECK (status IN ('created','live','offline','revoked')),
+    status VARCHAR(16) NOT NULL CHECK (status IN ('created','connecting','live','offline','revoked','error')),
+    publisher_label TEXT NULL,
     last_seen_at TIMESTAMPTZ NULL,
+    last_publish_started_at TIMESTAMPTZ NULL,
+    last_publish_stopped_at TIMESTAMPTZ NULL,
+    last_error TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE ingest_sessions
+    ADD COLUMN IF NOT EXISTS publisher_label TEXT NULL,
+    ADD COLUMN IF NOT EXISTS last_publish_started_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS last_publish_stopped_at TIMESTAMPTZ NULL,
+    ADD COLUMN IF NOT EXISTS last_error TEXT NULL;
+
+ALTER TABLE ingest_sessions DROP CONSTRAINT IF EXISTS ingest_sessions_status_check;
+ALTER TABLE ingest_sessions
+    ADD CONSTRAINT ingest_sessions_status_check
+    CHECK (status IN ('created','connecting','live','offline','revoked','error'));
 
 CREATE TABLE IF NOT EXISTS stream_permissions_user (
     id VARCHAR(36) PRIMARY KEY,

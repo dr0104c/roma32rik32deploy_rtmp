@@ -30,8 +30,12 @@ CREATE TABLE IF NOT EXISTS ingest_sessions (
     id VARCHAR(36) PRIMARY KEY,
     output_stream_id VARCHAR(36) NULL REFERENCES output_streams(id) ON DELETE SET NULL,
     ingest_key VARCHAR(64) NOT NULL,
-    status VARCHAR(16) NOT NULL CHECK (status IN ('created','live','offline','revoked')),
+    status VARCHAR(16) NOT NULL CHECK (status IN ('created','connecting','live','offline','revoked','error')),
+    publisher_label TEXT NULL,
     last_seen_at TIMESTAMPTZ NULL,
+    last_publish_started_at TIMESTAMPTZ NULL,
+    last_publish_stopped_at TIMESTAMPTZ NULL,
+    last_error TEXT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

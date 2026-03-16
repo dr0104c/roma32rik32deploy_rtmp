@@ -1,20 +1,15 @@
 import re
-from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..auth import generate_ingest_key
-from ..errors import conflict, not_found
-from ..models import IngestSession, OutputStream
+from ..errors import conflict
+from ..models import OutputStream
 from .audit import write_audit_log
 
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")
-
-
-def utcnow() -> datetime:
-    return datetime.now(UTC)
 
 
 def slugify(value: str) -> str:
@@ -61,44 +56,6 @@ def get_stream_by_ingest_key(db: Session, ingest_key: str) -> OutputStream | Non
 
 def get_stream_by_playback_name(db: Session, playback_name: str) -> OutputStream | None:
     return db.scalar(select(OutputStream).where(OutputStream.playback_name == playback_name, OutputStream.is_active.is_(True)))
-
-
-def mark_ingest_started(db: Session, ingest_key: str) -> OutputStream:
-    stream = get_stream_by_ingest_key(db, ingest_key)
-    if stream is None:
-        raise not_found("stream_not_found", "stream not found")
-    now = utcnow()
-    session = IngestSession(output_stream_id=stream.id, ingest_key=ingest_key, status="live", last_seen_at=now)
-    db.add(session)
-    write_audit_log(
-        db,
-        actor_type="media",
-        action="ingest_started",
-        target_type="output_stream",
-        target_id=stream.id,
-        metadata={"ingest_key": ingest_key},
-    )
-    db.commit()
-    db.refresh(stream)
-    return stream
-
-
-def mark_ingest_stopped(db: Session, ingest_key: str) -> None:
-    session = db.scalar(
-        select(IngestSession).where(IngestSession.ingest_key == ingest_key).order_by(IngestSession.updated_at.desc())
-    )
-    if session is not None:
-        session.status = "offline"
-        session.last_seen_at = utcnow()
-        write_audit_log(
-            db,
-            actor_type="media",
-            action="ingest_stopped",
-            target_type="output_stream",
-            target_id=session.output_stream_id,
-            metadata={"ingest_key": ingest_key},
-        )
-        db.commit()
 
 
 def list_streams_for_user(db: Session, user_id: str) -> list[OutputStream]:

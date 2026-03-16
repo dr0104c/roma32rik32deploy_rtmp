@@ -34,6 +34,28 @@ Current persistent objects:
 - `stream_permissions_group`
 - `audit_logs`
 
+## Ingest Lifecycle And Media Mapping
+
+Ingest session lifecycle states:
+
+- `created`
+- `connecting`
+- `live`
+- `offline`
+- `revoked`
+- `error`
+
+Mapping rules in the current MVP:
+
+- `output_stream.id` is the backend access object and is used in playback token claim `sid`
+- `output_stream.playback_name` is the public viewer path segment used for WHEP/WebRTC read requests
+- `output_stream.ingest_key` is the legacy open-ingest path segment
+- `ingest_sessions.ingest_key` is the stable publisher key used for keyed ingest mode and key rotation
+- MediaMTX publish path remains `live/{key}`
+- viewer playback path remains `live/{playback_name}`
+
+Publish-start handling is enforced through MediaMTX auth callbacks today. Publish-stop handling is implemented as a backend-compatible internal hook endpoint and used by smoke tests; wiring a native MediaMTX stop hook is still best-effort and depends on the chosen runtime image/tooling.
+
 ## API Endpoints
 
 Public:
@@ -53,10 +75,15 @@ Admin, protected by `X-Admin-Secret`:
 - `GET /api/v1/admin/streams`
 - `POST /api/v1/admin/streams/{stream_id}/grant-user`
 - `POST /api/v1/admin/streams/{stream_id}/revoke-user`
+- `POST /api/v1/admin/ingest-sessions`
+- `GET /api/v1/admin/ingest-sessions`
+- `POST /api/v1/admin/ingest-sessions/{id}/rotate-key`
+- `POST /api/v1/admin/ingest-sessions/{id}/revoke`
 
 Internal:
 
 - `POST /internal/media/auth`
+- `POST /internal/media/publish-stop`
 - compatibility alias: `POST /internal/mediamtx/auth`
 
 Legacy helper endpoints for the lightweight web viewer are still present:
@@ -73,6 +100,7 @@ Legacy helper endpoints for the lightweight web viewer are still present:
 - playback auth uses short-lived JWT `scope=playback`
 - viewer helper auth uses short-lived JWT `scope=viewer`
 - internal media auth uses `INTERNAL_API_SECRET`
+- ingest publish auth mode is controlled by `INGEST_AUTH_MODE=open|keyed`
 
 This is still MVP auth. There is no full admin identity/RBAC system yet.
 
@@ -107,11 +135,21 @@ Critical moderation actions are written to `user_status_history` and `audit_logs
 
 ## Stream Lifecycle
 
-- admin creates stream with `playback_name` and `ingest_key`
+- admin creates stream with `playback_name` and legacy stream-level `ingest_key`
+- admin may create dedicated ingest sessions with stable publisher keys
 - publisher ingests to `rtmp://HOST:RTMP_PORT/live/{ingest_key}`
-- MediaMTX publish auth marks the matching `ingest_session` as `live`
-- publish stop marks it `offline`
+- in `INGEST_AUTH_MODE=open`, legacy stream ingest keys still work for MVP compatibility
+- in `INGEST_AUTH_MODE=keyed`, publish requires a matching active `ingest_sessions.ingest_key`
+- MediaMTX publish auth marks the matching `ingest_session` as `connecting -> live`
+- publish stop transitions the session to `offline`
+- revoked ingest sessions cannot publish
 - viewers access `live/{playback_name}` only through WebRTC/WHEP token auth
+
+Ingest key rotation and revoke:
+
+- `POST /api/v1/admin/ingest-sessions/{id}/rotate-key` issues a new stable publisher key
+- `POST /api/v1/admin/ingest-sessions/{id}/revoke` marks the ingest session revoked
+- direct RTMP playback stays denied in all modes
 
 ## Current MVP Limitations
 
@@ -120,6 +158,7 @@ Critical moderation actions are written to `user_status_history` and `audit_logs
 - no transcoding or adaptive bitrate pipeline
 - group permission tables exist, but smoke currently exercises direct user grants
 - WHEP test is auth-path verification, not full browser playback automation
+- publish-stop callback wiring is backend-ready and smoke-tested, but native MediaMTX stop hook integration remains runtime-dependent
 
 ## One-Command Deploy
 
@@ -254,9 +293,26 @@ The e2e test verifies:
 - playback token issuance works
 - internal media auth accepts valid playback token
 - invalid playback token is rejected
+- ingest session lifecycle is visible and transitions `created -> live -> offline`
 - direct RTMP playback auth is denied
 - RTMP ingest works using generated `ffmpeg` test source
 - direct RTMP playback is denied
+
+## Restore After 7-Day VPS Rebuild
+
+To rebuild a short-lived VPS without losing state, keep these artifacts:
+
+- `.env`
+- `certs/letsencrypt`
+- PostgreSQL backups from `/var/backups/stream-platform/postgres`
+
+Basic restore flow:
+
+1. redeploy the node with `sudo ./bootstrap-install.sh`
+2. restore `.env`
+3. restore certificates if TLS is enabled
+4. run `./deploy/restore-postgres.sh /path/to/backup.sql.gz`
+5. run `./deploy/e2e-smoke.sh`
 
 WHEP verification is best-effort and honest:
 

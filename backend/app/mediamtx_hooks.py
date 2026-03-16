@@ -1,25 +1,33 @@
-import secrets
 from urllib.parse import parse_qs
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .db import get_db
 from .errors import bad_request, unauthorized
-from .schemas import MediaAuthRequest
+from .schemas import MediaAuthRequest, MediaEventRequest
 from .services.audit import write_audit_log
+from .services.ingest import handle_publish_start, handle_publish_stop
 from .services.playback import validate_playback_token_for_path
-from .services.streams import get_stream_by_ingest_key, get_stream_by_playback_name, mark_ingest_started, mark_ingest_stopped
+from .services.streams import get_stream_by_playback_name
 
 
 router = APIRouter(tags=["media"])
 
 
-def assert_internal_secret(secret: str) -> None:
+def assert_internal_secret(secret: str | None) -> None:
     settings = get_settings()
-    if not secrets.compare_digest(secret, settings.internal_api_secret):
+    if not settings.internal_media_secret_required:
+        return
+    from secrets import compare_digest
+
+    if not secret or not compare_digest(secret, settings.internal_api_secret):
         raise unauthorized("internal_secret_invalid", "invalid internal secret")
+
+
+def resolve_internal_secret(query_secret: str, header_secret: str) -> str:
+    return header_secret or query_secret
 
 
 def parse_live_path(path: str) -> str:
@@ -36,16 +44,22 @@ def handle_media_auth(body: MediaAuthRequest, db: Session) -> dict[str, str]:
     segment = parse_live_path(body.path)
 
     if action == "publish":
-        stream = get_stream_by_ingest_key(db, segment)
+        stream, session = handle_publish_start(db, ingest_key=segment, publisher_label=body.userAgent)
         if stream is None:
-            write_audit_log(db, actor_type="media", action="publish_denied", target_type="output_stream", metadata={"reason": "ingest_key_invalid", "path": body.path})
+            write_audit_log(
+                db,
+                actor_type="media",
+                action="publish_denied",
+                target_type="ingest_session",
+                target_id=session.id if session else None,
+                metadata={"reason": "ingest_key_invalid", "path": body.path, "protocol": protocol},
+            )
             db.commit()
             raise unauthorized("ingest_denied", "ingest denied")
-        mark_ingest_started(db, segment)
         return {"status": "ok"}
 
     if action in {"publish_stop", "unpublish"}:
-        mark_ingest_stopped(db, segment)
+        handle_publish_stop(db, ingest_key=segment)
         return {"status": "ok"}
 
     if action != "read":
@@ -84,12 +98,38 @@ def handle_media_auth(body: MediaAuthRequest, db: Session) -> dict[str, str]:
 
 
 @router.post("/internal/media/auth")
-def media_auth(body: MediaAuthRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
-    assert_internal_secret(secret)
+def media_auth(
+    body: MediaAuthRequest,
+    secret: str = Query(default=""),
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: Session = Depends(get_db),
+):
+    assert_internal_secret(resolve_internal_secret(secret, x_internal_secret))
     return handle_media_auth(body, db)
 
 
 @router.post("/internal/mediamtx/auth")
-def mediamtx_auth_compat(body: MediaAuthRequest, secret: str = Query(default=""), db: Session = Depends(get_db)):
-    assert_internal_secret(secret)
+def mediamtx_auth_compat(
+    body: MediaAuthRequest,
+    secret: str = Query(default=""),
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: Session = Depends(get_db),
+):
+    assert_internal_secret(resolve_internal_secret(secret, x_internal_secret))
     return handle_media_auth(body, db)
+
+
+@router.post("/internal/media/publish-stop")
+def media_publish_stop(
+    body: MediaEventRequest,
+    secret: str = Query(default=""),
+    x_internal_secret: str = Header(default="", alias="X-Internal-Secret"),
+    db: Session = Depends(get_db),
+):
+    assert_internal_secret(resolve_internal_secret(secret, x_internal_secret))
+    segment = parse_live_path(body.path)
+    session = handle_publish_stop(db, ingest_key=segment)
+    if session is None:
+        write_audit_log(db, actor_type="media", action="publish_stop_ignored", target_type="ingest_session", metadata={"path": body.path})
+        db.commit()
+    return {"status": "ok"}

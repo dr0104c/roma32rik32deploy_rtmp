@@ -13,3 +13,4 @@ nginx/certbot/www/.well-known/
 
 *.log
 .DS_Store
+.local-secrets

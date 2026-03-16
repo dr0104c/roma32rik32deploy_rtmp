@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     stream_list_poll_interval_seconds: int = Field(alias="STREAM_LIST_POLL_INTERVAL_SECONDS", default=5)
     viewer_session_ttl_seconds: int = Field(alias="VIEWER_SESSION_TTL_SECONDS", default=86400)
     playback_token_ttl_seconds: int = Field(alias="PLAYBACK_TOKEN_TTL_SECONDS", default=120)
+    ingest_auth_mode: str = Field(alias="INGEST_AUTH_MODE", default="open")
+    internal_media_secret_required: bool = Field(alias="INTERNAL_MEDIA_SECRET_REQUIRED", default=True)
     stream_stale_after_seconds: int = 10
     stream_end_after_seconds: int = 20
 

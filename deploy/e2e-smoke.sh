@@ -38,6 +38,8 @@ stream_id=""
 playback_name=""
 ingest_key=""
 playback_token=""
+ingest_session_id=""
+smoke_suffix="$(date +%s)-$$"
 
 record_result() {
   local status="$1"
@@ -94,7 +96,7 @@ check_site() {
 
 check_enroll() {
   local payload
-  payload="$(json_post "${base_url}/api/v1/enroll" '{"display_name":"Smoke User"}')"
+  payload="$(json_post "${base_url}/api/v1/enroll" "{\"display_name\":\"Smoke User ${smoke_suffix}\"}")"
   user_id="$(echo "${payload}" | jq -r '.user_id')"
   [[ -n "${user_id}" && "${user_id}" != "null" ]]
 }
@@ -102,18 +104,23 @@ check_enroll() {
 check_approve_create_stream_and_grant() {
   curl_api -X POST "${base_url}/api/v1/admin/users/${user_id}/approve" -H "X-Admin-Secret: ${ADMIN_SECRET}" >/dev/null
   local stream_payload
-  stream_payload="$(json_post "${base_url}/api/v1/admin/streams" '{"name":"smoke-main","playback_name":"smoke-main"}' -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+  stream_payload="$(json_post "${base_url}/api/v1/admin/streams" "{\"name\":\"smoke-main-${smoke_suffix}\",\"playback_name\":\"smoke-main-${smoke_suffix}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
   stream_id="$(echo "${stream_payload}" | jq -r '.stream_id')"
   playback_name="$(echo "${stream_payload}" | jq -r '.playback_name')"
   ingest_key="$(echo "${stream_payload}" | jq -r '.ingest_key')"
   [[ -n "${stream_id}" && -n "${playback_name}" && -n "${ingest_key}" ]] || return 1
   json_post "${base_url}/api/v1/admin/streams/${stream_id}/grant-user" "{\"user_id\":\"${user_id}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}" >/dev/null
+  local ingest_payload
+  ingest_payload="$(json_post "${base_url}/api/v1/admin/ingest-sessions" "{\"output_stream_id\":\"${stream_id}\",\"publisher_label\":\"smoke-publisher\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+  ingest_session_id="$(echo "${ingest_payload}" | jq -r '.ingest_session_id')"
+  ingest_key="$(echo "${ingest_payload}" | jq -r '.ingest_key')"
+  [[ -n "${ingest_session_id}" && -n "${ingest_key}" ]]
 }
 
 check_stream_listing() {
   local payload
   payload="$(curl_api "${base_url}/api/v1/streams?user_id=${user_id}")"
-  [[ "$(echo "${payload}" | jq '.streams | length')" == "1" ]]
+  echo "${payload}" | jq -e --arg stream_id "${stream_id}" '.streams[] | select(.stream_id == $stream_id)' >/dev/null
 }
 
 check_playback_token_issue() {
@@ -142,6 +149,17 @@ check_rtmp_ingest() {
     -f flv "rtmp://127.0.0.1:${RTMP_PORT}/live/${ingest_key}"
 }
 
+check_ingest_lifecycle() {
+  local payload live_status offline_status
+  payload="$(curl_api "${base_url}/api/v1/admin/ingest-sessions?output_stream_id=${stream_id}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+  live_status="$(echo "${payload}" | jq -r ".ingest_sessions[] | select(.ingest_session_id == \"${ingest_session_id}\") | .status")"
+  [[ "${live_status}" == "live" ]] || return 1
+  compose exec -T backend curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8000/internal/media/publish-stop?secret=${INTERNAL_API_SECRET}" -H 'content-type: application/json' -d "{\"path\":\"live/${ingest_key}\"}" | grep -q '^200$' || return 1
+  payload="$(curl_api "${base_url}/api/v1/admin/ingest-sessions?output_stream_id=${stream_id}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+  offline_status="$(echo "${payload}" | jq -r ".ingest_sessions[] | select(.ingest_session_id == \"${ingest_session_id}\") | .status")"
+  [[ "${offline_status}" == "offline" ]]
+}
+
 check_rtmp_playback_denied() {
   ! ffprobe -v error -rw_timeout 5000000 -show_entries stream=codec_type -of default=noprint_wrappers=1 "rtmp://127.0.0.1:${RTMP_PORT}/live/${playback_name}" >/dev/null 2>&1
 }
@@ -155,6 +173,7 @@ main() {
   run_check "playback token issuance works" check_playback_token_issue
   run_check "internal media auth validates token and denies RTMP playback" check_internal_auth
   run_check "RTMP ingest works with generated test source" check_rtmp_ingest
+  run_check "ingest session lifecycle is visible and transitions live -> offline" check_ingest_lifecycle
   run_check "direct RTMP playback is denied" check_rtmp_playback_denied
   print_results
   success "e2e smoke test passed"

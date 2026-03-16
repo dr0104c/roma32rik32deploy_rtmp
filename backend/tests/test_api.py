@@ -16,15 +16,19 @@ os.environ.setdefault("TURN_SHARED_SECRET", "test-turn-secret-1234567890")
 os.environ.setdefault("TURN_REALM", "127.0.0.1")
 os.environ.setdefault("STUN_URLS", "stun:127.0.0.1:3478")
 os.environ.setdefault("TURN_URLS", "turn:127.0.0.1:3478?transport=udp")
+os.environ.setdefault("INGEST_AUTH_MODE", "open")
+os.environ.setdefault("INTERNAL_MEDIA_SECRET_REQUIRED", "true")
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.config import get_settings
 from app.mediamtx_hooks import handle_media_auth
 from app.models import AuditLog, Base
 from app.schemas import MediaAuthRequest
 from app.services.enrollment import enroll_user
+from app.services.ingest import create_ingest_session, handle_publish_start, handle_publish_stop, revoke_ingest_session, rotate_ingest_key, transition_ingest_session
 from app.services.moderation import change_user_status
 from app.services.permissions import grant_user_access
 from app.services.playback import issue_playback_token
@@ -148,4 +152,96 @@ def test_audit_records_created_for_critical_actions():
     assert "stream_created" in actions
     assert "grant_user_stream" in actions
     assert "playback_token_issued" in actions
+    db.close()
+
+
+def test_valid_ingest_lifecycle_transitions():
+    db = fresh_db()
+    stream = create_stream(db, "Cam", "cam")
+    session = create_ingest_session(db, output_stream_id=stream.id, publisher_label="cam-1")
+    session = transition_ingest_session(db, session=session, next_status="connecting")
+    session = transition_ingest_session(db, session=session, next_status="live")
+    session = transition_ingest_session(db, session=session, next_status="offline")
+    assert session.status == "offline"
+    db.close()
+
+
+def test_invalid_ingest_transition_rejected():
+    db = fresh_db()
+    stream = create_stream(db, "Cam", "cam")
+    session = create_ingest_session(db, output_stream_id=stream.id)
+    try:
+        transition_ingest_session(db, session=session, next_status="revoked")
+        transition_ingest_session(db, session=session, next_status="live")
+        assert False
+    except Exception as exc:  # noqa: BLE001
+        assert "cannot transition" in str(exc.detail)
+    db.close()
+
+
+def test_publish_start_callback_marks_live_and_stop_marks_offline_idempotently():
+    db = fresh_db()
+    stream = create_stream(db, "Cam", "cam")
+    ingest = create_ingest_session(db, output_stream_id=stream.id, publisher_label="cam-1")
+    _, live_session = handle_publish_start(db, ingest_key=ingest.ingest_key, publisher_label="publisher-a")
+    assert live_session is not None
+    assert live_session.status == "live"
+    _, live_session_second = handle_publish_start(db, ingest_key=ingest.ingest_key, publisher_label="publisher-a")
+    assert live_session_second is not None
+    assert live_session_second.status == "live"
+    stopped = handle_publish_stop(db, ingest_key=ingest.ingest_key)
+    assert stopped is not None
+    assert stopped.status == "offline"
+    stopped_again = handle_publish_stop(db, ingest_key=ingest.ingest_key)
+    assert stopped_again is not None
+    assert stopped_again.status == "offline"
+    db.close()
+
+
+def test_keyed_ingest_auth_denies_invalid_publish_key():
+    db = fresh_db()
+    previous_mode = os.environ.get("INGEST_AUTH_MODE", "open")
+    os.environ["INGEST_AUTH_MODE"] = "keyed"
+    get_settings.cache_clear()
+    try:
+        stream = create_stream(db, "Cam", "cam")
+        create_ingest_session(db, output_stream_id=stream.id)
+        try:
+            handle_media_auth(MediaAuthRequest(action="publish", path="live/not-a-real-key", protocol="rtmp"), db)
+            assert False
+        except Exception as exc:  # noqa: BLE001
+            assert "ingest denied" in str(exc.detail)
+    finally:
+        os.environ["INGEST_AUTH_MODE"] = previous_mode
+        get_settings.cache_clear()
+        db.close()
+
+
+def test_internal_media_auth_requires_secret_when_enabled():
+    from app.mediamtx_hooks import assert_internal_secret
+
+    previous_required = os.environ.get("INTERNAL_MEDIA_SECRET_REQUIRED", "true")
+    os.environ["INTERNAL_MEDIA_SECRET_REQUIRED"] = "true"
+    get_settings.cache_clear()
+    try:
+        try:
+            assert_internal_secret("")
+            assert False
+        except Exception as exc:  # noqa: BLE001
+            assert "invalid internal secret" in str(exc.detail)
+        assert_internal_secret(os.environ["INTERNAL_API_SECRET"])
+    finally:
+        os.environ["INTERNAL_MEDIA_SECRET_REQUIRED"] = previous_required
+        get_settings.cache_clear()
+
+
+def test_rotate_and_revoke_ingest_session():
+    db = fresh_db()
+    stream = create_stream(db, "Cam", "cam")
+    session = create_ingest_session(db, output_stream_id=stream.id)
+    original_key = session.ingest_key
+    rotated = rotate_ingest_key(db, session.id)
+    assert rotated.ingest_key != original_key
+    revoked = revoke_ingest_session(db, session.id)
+    assert revoked.status == "revoked"
     db.close()

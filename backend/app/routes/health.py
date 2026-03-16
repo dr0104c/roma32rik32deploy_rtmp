@@ -1,10 +1,12 @@
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import SQLAlchemyError
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..db import engine
+from ..db import engine, get_db
+from ..models import AuditLog, IngestSession, OutputStream, User
 from ..schemas import HealthResponse
 
 
@@ -44,3 +46,22 @@ def health_ready():
         )
 
     return {"status": "ok", "ready": True}
+
+
+@router.get("/metrics")
+def metrics(db: Session = Depends(get_db)):
+    return {
+        "users_total": len(list(db.scalars(select(User)).all())),
+        "streams_total": len(list(db.scalars(select(OutputStream)).all())),
+        "ingest_live_total": len(list(db.scalars(select(IngestSession).where(IngestSession.status == "live")).all())),
+        "media_auth_failures_total": len(
+            list(
+                db.scalars(
+                    select(AuditLog).where(
+                        AuditLog.actor_type == "media",
+                        AuditLog.action.in_(["publish_denied", "media_auth_denied", "rtmp_playback_denied"]),
+                    )
+                ).all()
+            )
+        ),
+    }

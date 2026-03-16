@@ -127,6 +127,8 @@ bootstrap_env() {
   grep -q '^LOG_LEVEL=' .env || echo 'LOG_LEVEL=INFO' >> .env
   grep -q '^ACCESS_LOG_ENABLED=' .env || echo 'ACCESS_LOG_ENABLED=true' >> .env
   grep -q '^MEDIAMTX_LOG_LEVEL=' .env || echo 'MEDIAMTX_LOG_LEVEL=info' >> .env
+  grep -q '^INGEST_AUTH_MODE=' .env || echo 'INGEST_AUTH_MODE=open' >> .env
+  grep -q '^INTERNAL_MEDIA_SECRET_REQUIRED=' .env || echo 'INTERNAL_MEDIA_SECRET_REQUIRED=true' >> .env
   grep -q '^BACKUP_RETENTION=' .env || echo 'BACKUP_RETENTION=7' >> .env
   grep -q '^DOMAIN_NAME=' .env || echo 'DOMAIN_NAME=' >> .env
   grep -q '^ACME_EMAIL=' .env || echo 'ACME_EMAIL=' >> .env

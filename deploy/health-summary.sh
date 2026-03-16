@@ -38,6 +38,10 @@ fi
   echo
   info "disk usage"
   df -h /
+  info "ingest lifecycle summary"
+  compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -t -A -c "SELECT COUNT(*) FROM ingest_sessions WHERE status = 'live';" 2>/dev/null | sed 's/^/live_ingest_sessions=/'
+  compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -t -A -c "SELECT COALESCE(MAX(updated_at)::text, 'none') FROM ingest_sessions;" 2>/dev/null | sed 's/^/last_ingest_event=/'
+  compose exec -T postgres psql -U "${POSTGRES_USER}" -d "${POSTGRES_DB}" -t -A -c "SELECT COUNT(*) FROM audit_logs WHERE actor_type = 'media' AND action IN ('publish_denied','media_auth_denied','rtmp_playback_denied') AND created_at >= NOW() - INTERVAL '1 hour';" 2>/dev/null | sed 's/^/media_auth_failures_last_hour=/'
   for service in backend nginx mediamtx postgres coturn; do
     info "last log lines for ${service}"
     docker_host logs "stream-platform-${service}" --tail 20 2>&1
