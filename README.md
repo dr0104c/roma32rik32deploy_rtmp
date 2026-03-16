@@ -66,6 +66,20 @@ Important variables:
 
 ## Deploy Flow
 
+For a completely clean host, you can use a single bootstrap script that pulls the project from GitLab and then runs the normal installer:
+
+```bash
+curl -fsSL https://gitlab.roma32rik.ru/roman1/server_deploy/-/raw/main/bootstrap-install.sh -o bootstrap-install.sh
+chmod +x bootstrap-install.sh
+sudo ./bootstrap-install.sh
+```
+
+For a private repository, pass a token only for bootstrap:
+
+```bash
+sudo GITLAB_TOKEN=your_token_here ./bootstrap-install.sh
+```
+
 Run on Debian Bookworm:
 
 ```bash
