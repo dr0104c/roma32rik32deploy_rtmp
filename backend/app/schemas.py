@@ -67,6 +67,7 @@ class PermissionMutationResponse(BaseModel):
 class CreateIngestSessionRequest(BaseModel):
     output_stream_id: str
     publisher_label: str | None = Field(default=None, max_length=255)
+    ingest_key: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class RotateIngestKeyResponse(BaseModel):

@@ -48,7 +48,7 @@ def block(user_id: str, db: Session = Depends(get_db)) -> ChangeUserStatusRespon
 
 @router.post("/ingest-sessions", response_model=IngestSessionResponse, status_code=201)
 def create_ingest(body: CreateIngestSessionRequest, db: Session = Depends(get_db)) -> IngestSessionResponse:
-    session = create_ingest_session(db, output_stream_id=body.output_stream_id, publisher_label=body.publisher_label)
+    session = create_ingest_session(db, output_stream_id=body.output_stream_id, publisher_label=body.publisher_label, ingest_key=body.ingest_key)
     return IngestSessionResponse(
         ingest_session_id=session.id,
         output_stream_id=session.output_stream_id,

@@ -10,6 +10,33 @@ Production-like single-operator foundation for the streaming platform. The exist
 
 No transcoder is included in this stack. The media server relays the ingested stream; it does not claim to transcode it.
 
+## One-shot Deploy
+
+Clean Debian Bookworm server:
+
+```bash
+curl -fsSL https://gitlab.roma32rik.ru/roman1/server_deploy/-/raw/main/bootstrap-install.sh -o bootstrap-install.sh
+chmod +x bootstrap-install.sh
+sudo ./bootstrap-install.sh
+```
+
+Local checkout on Debian 12:
+
+```bash
+sudo ./bootstrap-install.sh
+```
+
+The deploy flow is one-shot:
+
+- install packages and Docker
+- sync project into `/opt/stream-platform`
+- bootstrap secrets and runtime configs
+- start the stack
+- run DB migrations
+- wait for readiness
+- run automated verification
+- write final verification reports
+
 ## Backend MVP Domain
 
 The backend now includes a minimal domain layer for:
@@ -160,21 +187,30 @@ Ingest key rotation and revoke:
 - WHEP test is auth-path verification, not full browser playback automation
 - publish-stop callback wiring is backend-ready and smoke-tested, but native MediaMTX stop hook integration remains runtime-dependent
 
-## One-Command Deploy
+## Automated Media Verification
 
-Clean Debian Bookworm VPS:
+The deploy now ends with a dedicated verification phase:
 
-```bash
-curl -fsSL https://gitlab.roma32rik.ru/roman1/server_deploy/-/raw/main/bootstrap-install.sh -o bootstrap-install.sh
-chmod +x bootstrap-install.sh
-sudo ./bootstrap-install.sh
-```
+- `deploy/verify-stack.sh`
+- `deploy/media-smoke-test.sh`
+- `deploy/write-verification-report.sh`
 
-Local checkout on Debian Bookworm:
+Verification includes:
 
-```bash
-sudo ./bootstrap-install.sh
-```
+- backend `/health`, `/health/live`, `/health/ready`
+- nginx public endpoint availability
+- synthetic RTMP ingest using `ffmpeg` test source
+- MediaMTX ingest lifecycle visibility through backend API
+- direct RTMP playback denial
+- playback token + internal auth callback path
+- WHEP/WebRTC endpoint HTTP semantics with valid and invalid token
+- TURN service reachability on the published TCP port
+- JSON and TXT verification reports
+
+Generated reports:
+
+- `deploy/verification-report.json`
+- `deploy/verification-report.txt`
 
 `bootstrap-install.sh` works in two modes:
 
@@ -221,8 +257,9 @@ The installer:
 13. applies firewall rules
 14. installs backup/cert-renew/health timers
 15. waits for actual readiness
-16. runs `deploy/e2e-smoke.sh`
-17. prints a final PASS/FAIL summary
+16. runs `deploy/verify-stack.sh`
+17. writes verification reports
+18. prints a final PASS/FAIL summary with access URLs
 
 ## Exact Ports
 
@@ -265,13 +302,28 @@ What is not claimed:
 - no claim that RTMP ingest is encrypted unless RTMPS is added later
 - no claim of full real-browser playback automation inside smoke tests
 
+## Encrypted Playback vs Transcoding
+
+These are separate concerns and the deploy report treats them separately:
+
+- `ingest accepted`: RTMP publish was accepted by MediaMTX and surfaced in backend lifecycle state
+- `stream republished to WebRTC/WHEP`: the viewer path and tokenized auth reached the media layer successfully
+- `playback transport encrypted`: only reported as `true` when TLS is enabled and WHEP/WebRTC verification passes
+- `transcoding absent / not configured`: current default mode
+
+Optional env flag:
+
+- `ENABLE_FFMPEG_TRANSCODE=false|true`
+
+Right now this flag is diagnostic only. The default stack remains passthrough/relay oriented and does not add a transcoder pipeline automatically. If the flag is set to `true`, the verification report still marks transcoding as unverified unless a real transcoding path is added later.
+
 ## Smoke / E2E Verification
 
 Main smoke entrypoint:
 
 ```bash
 cd /opt/stream-platform
-./deploy/e2e-smoke.sh
+./deploy/verify-stack.sh
 ```
 
 Compatibility wrapper:
@@ -281,22 +333,54 @@ cd /opt/stream-platform
 ./deploy/smoke-test.sh
 ```
 
-The e2e test verifies:
+The verification stage checks:
 
 - backend `/health`, `/health/live`, `/health/ready`
 - nginx serves the viewer site
-- enroll works
-- approve works
-- create stream works
-- direct user grant works
-- approved user stream listing works
-- playback token issuance works
+- synthetic enroll / approve / stream / grant / token path
 - internal media auth accepts valid playback token
 - invalid playback token is rejected
-- ingest session lifecycle is visible and transitions `created -> live -> offline`
-- direct RTMP playback auth is denied
+- ingest session lifecycle transitions `created -> live -> offline`
 - RTMP ingest works using generated `ffmpeg` test source
 - direct RTMP playback is denied
+- WHEP/WebRTC endpoint exposes the expected authenticated HTTP semantics
+- TURN service is reachable
+- final machine-readable and human-readable reports are written
+
+Browser-level rendering is not claimed by this verification. The report explicitly records that verification is server-side transport and auth readiness, not a real browser playback assertion.
+
+## HTTP Bootstrap And HTTPS Mode
+
+HTTP bootstrap:
+
+```bash
+sudo ENABLE_TLS=false ./bootstrap-install.sh
+```
+
+HTTPS mode:
+
+```bash
+sudo ENABLE_TLS=true DOMAIN_NAME=stream.example.com ACME_EMAIL=ops@example.com ./bootstrap-install.sh
+```
+
+For HTTPS mode:
+
+- DNS for `DOMAIN_NAME` must already point to the VPS
+- ports `80/tcp` and `443/tcp` must be reachable
+- the install will fail fast if ACME prerequisites are missing
+
+## Typical Verification Problems
+
+- `RTMP ingest accepted = false`
+  Usually wrong firewall/NAT exposure for `${RTMP_PORT}` or MediaMTX not healthy.
+- `WHEP/WebRTC endpoint OK = false`
+  Usually a playback token/auth path mismatch or nginx routing issue under `/webrtc/`.
+- `protected playback channel = false`
+  Expected in bootstrap HTTP mode. Enable TLS for public encrypted signaling.
+- `TURN reachable = false`
+  Usually blocked `TURN_PORT` / `TURN_TLS_PORT` or coturn did not bind as expected.
+- `transcoding verified = false`
+  Expected in the current default stack because no transcoder is configured.
 
 ## Restore After 7-Day VPS Rebuild
 

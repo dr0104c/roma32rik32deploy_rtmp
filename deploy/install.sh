@@ -129,6 +129,7 @@ bootstrap_env() {
   grep -q '^MEDIAMTX_LOG_LEVEL=' .env || echo 'MEDIAMTX_LOG_LEVEL=info' >> .env
   grep -q '^INGEST_AUTH_MODE=' .env || echo 'INGEST_AUTH_MODE=open' >> .env
   grep -q '^INTERNAL_MEDIA_SECRET_REQUIRED=' .env || echo 'INTERNAL_MEDIA_SECRET_REQUIRED=true' >> .env
+  grep -q '^ENABLE_FFMPEG_TRANSCODE=' .env || echo 'ENABLE_FFMPEG_TRANSCODE=false' >> .env
   grep -q '^BACKUP_RETENTION=' .env || echo 'BACKUP_RETENTION=7' >> .env
   grep -q '^DOMAIN_NAME=' .env || echo 'DOMAIN_NAME=' >> .env
   grep -q '^ACME_EMAIL=' .env || echo 'ACME_EMAIL=' >> .env
@@ -303,15 +304,43 @@ wait_ready() {
   fail "backend readiness check did not become ready"
 }
 
-run_smoke_tests() {
-  info "running end-to-end smoke checks"
+run_verification() {
+  info "running post-deploy verification"
   cd "${TARGET_ROOT}"
-  ./deploy/e2e-smoke.sh
+  ./deploy/verify-stack.sh
 }
 
 final_summary() {
-  info "printing operational summary"
   cd "${TARGET_ROOT}"
+  local tls_enabled public_base_url webrtc_base_url public_host rtmp_port transcoding_enabled report_json report_txt
+  tls_enabled="$(env_get ENABLE_TLS .env)"
+  public_base_url="$(env_get PUBLIC_BASE_URL .env)"
+  webrtc_base_url="$(env_get WEBRTC_PUBLIC_BASE_URL .env)"
+  public_host="$(env_get PUBLIC_HOST .env)"
+  rtmp_port="$(env_get RTMP_PORT .env)"
+  transcoding_enabled="$(env_get ENABLE_FFMPEG_TRANSCODE .env)"
+  report_json="${TARGET_ROOT}/deploy/verification-report.json"
+  report_txt="${TARGET_ROOT}/deploy/verification-report.txt"
+
+  printf '\n=== Access Summary ===\n'
+  printf 'Site / Viewer: %s/\n' "${public_base_url}"
+  printf 'Backend health: %s/health\n' "${public_base_url}"
+  printf 'Backend API: %s/api/\n' "${public_base_url}"
+  printf 'WHEP/WebRTC base: %s/\n' "${webrtc_base_url}"
+  printf 'RTMP ingest publish URL pattern: rtmp://%s:%s/live/{ingest_key}\n' "${public_host}" "${rtmp_port}"
+  printf 'RTMP playback: disabled\n'
+  printf 'WebRTC/WHEP playback: enabled with backend-issued playback token\n'
+  printf 'TLS enabled: %s\n' "${tls_enabled}"
+  printf 'Transcoding enabled: %s\n' "${transcoding_enabled}"
+  if [[ "${transcoding_enabled}" == "true" ]]; then
+    printf 'Transcoding verification: not implemented in the current stack; report reflects this explicitly\n'
+  else
+    printf 'Transcoding: absent / passthrough relay only\n'
+  fi
+  printf 'Verification report JSON: %s\n' "${report_json}"
+  printf 'Verification report TXT: %s\n\n' "${report_txt}"
+
+  info "printing operational summary"
   ./deploy/health-summary.sh || true
 }
 
@@ -361,8 +390,8 @@ main() {
   wait_ready
   record_pass "stack readiness confirmed"
 
-  run_smoke_tests
-  record_pass "end-to-end smoke test passed"
+  run_verification
+  record_pass "post-deploy verification passed"
 
   final_summary
   record_pass "final health summary generated"

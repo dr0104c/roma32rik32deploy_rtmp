@@ -32,13 +32,21 @@ def generate_unique_ingest_key(db: Session) -> str:
     return ingest_key
 
 
-def create_ingest_session(db: Session, *, output_stream_id: str, publisher_label: str | None = None) -> IngestSession:
+def create_ingest_session(
+    db: Session,
+    *,
+    output_stream_id: str,
+    publisher_label: str | None = None,
+    ingest_key: str | None = None,
+) -> IngestSession:
     stream = db.get(OutputStream, output_stream_id)
     if stream is None:
         raise not_found("stream_not_found", "stream not found")
+    if ingest_key is not None and db.scalar(select(IngestSession).where(IngestSession.ingest_key == ingest_key)) is not None:
+        raise conflict("ingest_key_exists", "ingest key already exists")
     session = IngestSession(
         output_stream_id=stream.id,
-        ingest_key=generate_unique_ingest_key(db),
+        ingest_key=ingest_key or generate_unique_ingest_key(db),
         status="created",
         publisher_label=publisher_label,
     )
@@ -51,7 +59,7 @@ def create_ingest_session(db: Session, *, output_stream_id: str, publisher_label
         action="ingest_session_created",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": output_stream_id, "publisher_label": publisher_label},
+        metadata={"output_stream_id": output_stream_id, "publisher_label": publisher_label, "ingest_key_override": ingest_key is not None},
     )
     db.commit()
     db.refresh(session)
