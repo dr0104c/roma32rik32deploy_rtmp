@@ -1,0 +1,196 @@
+:root {
+  --bg: #0d1117;
+  --panel: #151b24;
+  --panel-strong: #1a2230;
+  --line: #293243;
+  --text: #edf2f7;
+  --muted: #94a3b8;
+  --accent: #3dd9b3;
+  --danger: #ff6b6b;
+  --warn: #f8c555;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  background:
+    radial-gradient(circle at top right, rgba(61, 217, 179, 0.22), transparent 28%),
+    linear-gradient(180deg, #091017 0%, #0d1117 100%);
+  color: var(--text);
+}
+
+.shell {
+  width: min(1200px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 32px 0 48px;
+}
+
+.panel {
+  background: rgba(21, 27, 36, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.hero {
+  display: grid;
+  gap: 24px;
+  padding: 28px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 12px;
+}
+
+h1, h2 {
+  margin: 0 0 12px;
+}
+
+.lede, .muted {
+  color: var(--muted);
+}
+
+.connect-form {
+  display: grid;
+  gap: 12px;
+  max-width: 360px;
+}
+
+input, button {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+input {
+  padding: 14px 16px;
+  color: var(--text);
+  background: #0f1621;
+}
+
+button {
+  padding: 14px 18px;
+  color: #06140f;
+  background: var(--accent);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+button.secondary {
+  color: var(--text);
+  background: transparent;
+}
+
+.layout {
+  display: grid;
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.profile, .streams, .player {
+  padding: 20px;
+}
+
+.streams-head, .player-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.stream-list {
+  display: grid;
+  gap: 12px;
+}
+
+.stream-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--panel-strong);
+}
+
+.stream-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.badge.live {
+  color: #07140d;
+  background: var(--accent);
+}
+
+.badge.offline, .badge.neutral {
+  color: var(--muted);
+  background: #111827;
+}
+
+.badge.warn {
+  color: #201407;
+  background: var(--warn);
+}
+
+.badge.danger {
+  color: #2c0c0c;
+  background: var(--danger);
+}
+
+.status-card {
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #101722;
+}
+
+video {
+  width: 100%;
+  min-height: 280px;
+  border-radius: 16px;
+  background: #05080d;
+  margin-bottom: 14px;
+}
+
+.endpoint {
+  display: block;
+  padding: 14px;
+  overflow-wrap: anywhere;
+  border-radius: 12px;
+  background: #0f1621;
+  border: 1px solid var(--line);
+}
+
+.hidden {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .layout {
+    grid-template-columns: 280px 1fr 1.1fr;
+    align-items: start;
+  }
+}

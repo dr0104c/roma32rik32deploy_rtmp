@@ -1,0 +1,8 @@
+[Unit]
+Description=Stream Platform PostgreSQL Backup
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stream-platform
+ExecStart=/opt/stream-platform/deploy/backup-postgres.sh

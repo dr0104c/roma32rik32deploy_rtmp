@@ -1,0 +1,32 @@
+logLevel: ${MEDIAMTX_LOG_LEVEL}
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: no
+rtsp: no
+srt: no
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts:
+  - ${PUBLIC_HOST}
+webrtcICEServers2:
+  - url: stun:${PUBLIC_HOST}:3478
+  - url: turn:${PUBLIC_HOST}:3478?transport=udp
+    username: any
+    password: ${TURN_SHARED_SECRET}
+  - url: turn:${PUBLIC_HOST}:3478?transport=tcp
+    username: any
+    password: ${TURN_SHARED_SECRET}
+
+authMethod: http
+authHTTPAddress: http://backend:8000/internal/mediamtx/auth?secret=${INTERNAL_API_SECRET}
+
+pathDefaults:
+  source: publisher
+
+paths:
+  "~^live/.+$":

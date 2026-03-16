@@ -1,0 +1,15 @@
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+
+certs/
+backups/
+pgdata/
+
+nginx/conf.d/active.conf
+nginx/certbot/www/.well-known/
+
+*.log
+.DS_Store

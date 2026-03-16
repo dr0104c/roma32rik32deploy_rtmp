@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew Stream Platform TLS Certificates
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stream-platform
+ExecStart=/opt/stream-platform/deploy/certbot-renew.sh
+ExecStartPost=/usr/bin/docker compose --env-file /opt/stream-platform/.env -f /opt/stream-platform/docker/compose.yml restart nginx

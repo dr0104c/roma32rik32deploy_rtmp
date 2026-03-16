@@ -1,0 +1,8 @@
+[Unit]
+Description=Stream Platform Health Summary
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/stream-platform
+ExecStart=/opt/stream-platform/deploy/health-summary.sh

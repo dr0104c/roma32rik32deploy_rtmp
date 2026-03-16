@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stream Viewer</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="panel hero">
+      <div>
+        <p class="eyebrow">Viewer Fallback Client</p>
+        <h1>WebRTC Viewer</h1>
+        <p class="lede">Use your client code to open the streams assigned to your account.</p>
+      </div>
+      <form id="connect-form" class="connect-form">
+        <label for="client-code">Client code</label>
+        <input id="client-code" name="client-code" placeholder="C7F2-91KQ" autocomplete="off" required>
+        <button type="submit">Connect</button>
+      </form>
+      <div id="session-status" class="status-card hidden"></div>
+    </section>
+
+    <section id="viewer-panel" class="layout hidden">
+      <aside class="panel profile">
+        <h2>Viewer</h2>
+        <div id="profile"></div>
+        <button id="refresh-streams" class="secondary">Refresh streams</button>
+      </aside>
+
+      <section class="panel streams">
+        <div class="streams-head">
+          <h2>Assigned Streams</h2>
+          <span id="stream-count" class="muted"></span>
+        </div>
+        <div id="streams-list" class="stream-list"></div>
+      </section>
+
+      <section class="panel player">
+        <div class="player-head">
+          <h2>Playback</h2>
+          <span id="player-state" class="badge neutral">Idle</span>
+        </div>
+        <video id="video" playsinline controls autoplay muted></video>
+        <p id="player-message" class="muted">Select a stream to request a playback session.</p>
+        <code id="playback-url" class="endpoint hidden"></code>
+      </section>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
