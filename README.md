@@ -34,7 +34,8 @@ The deploy flow is one-shot:
 - start the stack
 - run DB migrations
 - wait for readiness
-- run automated verification
+- run media smoke verification
+- run full automated verification
 - write final verification reports
 
 ## Backend MVP Domain
@@ -205,12 +206,30 @@ Verification includes:
 - playback token + internal auth callback path
 - WHEP/WebRTC endpoint HTTP semantics with valid and invalid token
 - TURN service reachability on the published TCP port
+- explicit separation of encrypted playback vs transcoding
 - JSON and TXT verification reports
 
 Generated reports:
 
 - `deploy/verification-report.json`
 - `deploy/verification-report.txt`
+
+Report fields include:
+
+- `containers_ok`
+- `backend_ready`
+- `nginx_ok`
+- `rtmp_ingest_ok`
+- `rtmp_playback_blocked`
+- `whep_or_webrtc_endpoint_ok`
+- `turn_reachable`
+- `playback_auth_ok`
+- `media_encryption_ok`
+- `transcoding_enabled`
+- `transcoding_verified`
+- `browser_level_rendering_verified`
+- `overall_status`
+- `failed_checks`
 
 `bootstrap-install.sh` works in two modes:
 
@@ -314,6 +333,13 @@ These are separate concerns and the deploy report treats them separately:
 Optional env flag:
 
 - `ENABLE_FFMPEG_TRANSCODE=false|true`
+- `ENABLE_AUTOMATED_MEDIA_VERIFY=true|false`
+- `VERIFY_TURN=true|false`
+- `VERIFY_BROWSERLESS_WHEP=true|false`
+- `VERIFY_RTMP_PLAYBACK_BLOCK=true|false`
+- `VERIFY_REPORT_DIR=deploy`
+- `MEDIA_SMOKE_TEST_DURATION_SEC=12`
+- `MEDIA_SMOKE_TEST_STREAM_NAME=verification-smoke`
 
 Right now this flag is diagnostic only. The default stack remains passthrough/relay oriented and does not add a transcoder pipeline automatically. If the flag is set to `true`, the verification report still marks transcoding as unverified unless a real transcoding path is added later.
 
@@ -349,6 +375,14 @@ The verification stage checks:
 
 Browser-level rendering is not claimed by this verification. The report explicitly records that verification is server-side transport and auth readiness, not a real browser playback assertion.
 
+`deploy/media-smoke-test.sh` is also intentionally server-side only:
+
+- it publishes a deterministic synthetic `ffmpeg` source for a bounded duration
+- it verifies ingest lifecycle and WHEP auth semantics
+- it verifies direct RTMP playback stays blocked
+- it cleans up the publisher process and temporary files
+- it does not claim real browser rendering
+
 ## HTTP Bootstrap And HTTPS Mode
 
 HTTP bootstrap:
@@ -381,6 +415,8 @@ For HTTPS mode:
   Usually blocked `TURN_PORT` / `TURN_TLS_PORT` or coturn did not bind as expected.
 - `transcoding verified = false`
   Expected in the current default stack because no transcoder is configured.
+- `rtmp_playback_blocked = false`
+  Hard failure. Viewer playback must stay on WebRTC/WHEP only.
 
 ## Restore After 7-Day VPS Rebuild
 

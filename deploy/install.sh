@@ -130,6 +130,13 @@ bootstrap_env() {
   grep -q '^INGEST_AUTH_MODE=' .env || echo 'INGEST_AUTH_MODE=open' >> .env
   grep -q '^INTERNAL_MEDIA_SECRET_REQUIRED=' .env || echo 'INTERNAL_MEDIA_SECRET_REQUIRED=true' >> .env
   grep -q '^ENABLE_FFMPEG_TRANSCODE=' .env || echo 'ENABLE_FFMPEG_TRANSCODE=false' >> .env
+  grep -q '^ENABLE_AUTOMATED_MEDIA_VERIFY=' .env || echo 'ENABLE_AUTOMATED_MEDIA_VERIFY=true' >> .env
+  grep -q '^VERIFY_TURN=' .env || echo 'VERIFY_TURN=true' >> .env
+  grep -q '^VERIFY_BROWSERLESS_WHEP=' .env || echo 'VERIFY_BROWSERLESS_WHEP=true' >> .env
+  grep -q '^VERIFY_RTMP_PLAYBACK_BLOCK=' .env || echo 'VERIFY_RTMP_PLAYBACK_BLOCK=true' >> .env
+  grep -q '^VERIFY_REPORT_DIR=' .env || echo 'VERIFY_REPORT_DIR=deploy' >> .env
+  grep -q '^MEDIA_SMOKE_TEST_DURATION_SEC=' .env || echo 'MEDIA_SMOKE_TEST_DURATION_SEC=12' >> .env
+  grep -q '^MEDIA_SMOKE_TEST_STREAM_NAME=' .env || echo 'MEDIA_SMOKE_TEST_STREAM_NAME=verification-smoke' >> .env
   grep -q '^BACKUP_RETENTION=' .env || echo 'BACKUP_RETENTION=7' >> .env
   grep -q '^DOMAIN_NAME=' .env || echo 'DOMAIN_NAME=' >> .env
   grep -q '^ACME_EMAIL=' .env || echo 'ACME_EMAIL=' >> .env
@@ -197,6 +204,7 @@ render_runtime_configs() {
   set -a
   source .env
   set +a
+  mkdir -p "${VERIFY_REPORT_DIR:-deploy}"
 
   sed \
     -e "s|\${PUBLIC_HOST}|${PUBLIC_HOST}|g" \
@@ -307,35 +315,61 @@ wait_ready() {
 run_verification() {
   info "running post-deploy verification"
   cd "${TARGET_ROOT}"
+  if [[ "$(env_get ENABLE_AUTOMATED_MEDIA_VERIFY .env)" != "true" ]]; then
+    warn "ENABLE_AUTOMATED_MEDIA_VERIFY=false; writing skipped verification report"
+    ./deploy/write-verification-report.sh --skipped
+    return 0
+  fi
   ./deploy/verify-stack.sh
 }
 
 final_summary() {
   cd "${TARGET_ROOT}"
-  local tls_enabled public_base_url webrtc_base_url public_host rtmp_port transcoding_enabled report_json report_txt
+  local tls_enabled public_base_url webrtc_base_url public_host rtmp_port transcoding_enabled report_dir report_json report_txt
+  local deploy_status whep_available encrypted_playback rtmp_blocked overall_status
   tls_enabled="$(env_get ENABLE_TLS .env)"
   public_base_url="$(env_get PUBLIC_BASE_URL .env)"
   webrtc_base_url="$(env_get WEBRTC_PUBLIC_BASE_URL .env)"
   public_host="$(env_get PUBLIC_HOST .env)"
   rtmp_port="$(env_get RTMP_PORT .env)"
   transcoding_enabled="$(env_get ENABLE_FFMPEG_TRANSCODE .env)"
-  report_json="${TARGET_ROOT}/deploy/verification-report.json"
-  report_txt="${TARGET_ROOT}/deploy/verification-report.txt"
+  report_dir="$(env_get VERIFY_REPORT_DIR .env)"
+  [[ -n "${report_dir}" ]] || report_dir="deploy"
+  report_json="${TARGET_ROOT}/${report_dir}/verification-report.json"
+  report_txt="${TARGET_ROOT}/${report_dir}/verification-report.txt"
+  overall_status="failed"
+  whep_available="NO"
+  encrypted_playback="NO"
+  rtmp_blocked="NO"
 
-  printf '\n=== Access Summary ===\n'
-  printf 'Site / Viewer: %s/\n' "${public_base_url}"
-  printf 'Backend health: %s/health\n' "${public_base_url}"
-  printf 'Backend API: %s/api/\n' "${public_base_url}"
-  printf 'WHEP/WebRTC base: %s/\n' "${webrtc_base_url}"
-  printf 'RTMP ingest publish URL pattern: rtmp://%s:%s/live/{ingest_key}\n' "${public_host}" "${rtmp_port}"
-  printf 'RTMP playback: disabled\n'
-  printf 'WebRTC/WHEP playback: enabled with backend-issued playback token\n'
-  printf 'TLS enabled: %s\n' "${tls_enabled}"
-  printf 'Transcoding enabled: %s\n' "${transcoding_enabled}"
-  if [[ "${transcoding_enabled}" == "true" ]]; then
-    printf 'Transcoding verification: not implemented in the current stack; report reflects this explicitly\n'
+  if [[ -f "${report_json}" ]]; then
+    overall_status="$(jq -r '.overall_status // "failed"' "${report_json}")"
+    [[ "$(jq -r '.whep_or_webrtc_endpoint_ok // false' "${report_json}")" == "true" ]] && whep_available="YES"
+    [[ "$(jq -r '.media_encryption_ok // false' "${report_json}")" == "true" ]] && encrypted_playback="YES"
+    [[ "$(jq -r '.rtmp_playback_blocked // false' "${report_json}")" == "true" ]] && rtmp_blocked="YES"
+  fi
+
+  if [[ "${overall_status}" == "passed" || "${overall_status}" == "skipped" ]]; then
+    deploy_status="SUCCESS"
   else
-    printf 'Transcoding: absent / passthrough relay only\n'
+    deploy_status="FAILED"
+  fi
+
+  printf '\n=== Final Summary ===\n'
+  printf 'Deploy status: %s\n' "${deploy_status}"
+  printf 'Backend URL: %s/health\n' "${public_base_url}"
+  printf 'API URL: %s/api/\n' "${public_base_url}"
+  printf 'Viewer/media URL: %s/\n' "${webrtc_base_url}"
+  printf 'RTMP ingest endpoint: rtmp://%s:%s/live/{ingest_key}\n' "${public_host}" "${rtmp_port}"
+  printf 'RTMP playback blocked: %s\n' "${rtmp_blocked}"
+  printf 'WebRTC/WHEP playback available: %s\n' "${whep_available}"
+  printf 'TLS enabled: %s\n' "$( [[ "${tls_enabled}" == "true" ]] && echo YES || echo NO )"
+  printf 'Encrypted playback: %s\n' "${encrypted_playback}"
+  printf 'Transcoding enabled: %s\n' "$( [[ "${transcoding_enabled}" == "true" ]] && echo YES || echo NO )"
+  if [[ "${transcoding_enabled}" == "true" ]]; then
+    printf 'Transcoding verification: NOT VERIFIED unless a real transcoding pipeline is added\n'
+  else
+    printf 'Transcoding verification: disabled / not configured\n'
   fi
   printf 'Verification report JSON: %s\n' "${report_json}"
   printf 'Verification report TXT: %s\n\n' "${report_txt}"

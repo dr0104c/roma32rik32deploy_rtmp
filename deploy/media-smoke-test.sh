@@ -20,6 +20,8 @@ require_cmd ffprobe
 require_cmd timeout
 
 state_file="${1:-${SCRIPT_DIR}/.media-smoke-state}"
+tmp_dir="$(mktemp -d /tmp/stream-platform-media-smoke.XXXXXX)"
+ffmpeg_log="${tmp_dir}/ffmpeg.log"
 rm -f "${state_file}"
 
 base_scheme="http"
@@ -33,14 +35,22 @@ if [[ "${ENABLE_TLS}" == "true" && -n "${DOMAIN_NAME}" && -f "certs/letsencrypt/
   curl_base_opts=(-k --resolve "${DOMAIN_NAME}:${NGINX_HTTPS_PORT}:127.0.0.1")
 fi
 base_url="${base_scheme}://${base_host}:${base_port}"
+smoke_duration="${MEDIA_SMOKE_TEST_DURATION_SEC:-12}"
+smoke_stream_prefix="${MEDIA_SMOKE_TEST_STREAM_NAME:-verification-smoke}"
 smoke_suffix="$(date +%s)-$$"
 ffmpeg_pid=""
 
-cleanup() {
+stop_publisher() {
   if [[ -n "${ffmpeg_pid}" ]] && kill -0 "${ffmpeg_pid}" >/dev/null 2>&1; then
     kill "${ffmpeg_pid}" >/dev/null 2>&1 || true
     wait "${ffmpeg_pid}" >/dev/null 2>&1 || true
   fi
+  ffmpeg_pid=""
+}
+
+cleanup() {
+  stop_publisher
+  rm -rf "${tmp_dir}"
 }
 trap cleanup EXIT
 
@@ -110,7 +120,7 @@ write_state() {
     printf 'SMOKE_TURN_REACHABLE=%q\n' "${turn_reachable}"
     printf 'SMOKE_MEDIA_ENCRYPTION_OK=%q\n' "${media_encryption_ok}"
     printf 'SMOKE_TRANSCODING_ENABLED=%q\n' "${ENABLE_FFMPEG_TRANSCODE}"
-    printf 'SMOKE_TRANSCODING_VERIFIED=%q\n' "${transcoding_verified}"
+    printf 'SMOKE_TRANSCODING_VERIFIED=%q\n' "false"
     printf 'SMOKE_BROWSER_RENDERING_VERIFIED=%q\n' "false"
     printf 'SMOKE_MEDIA_NOTES=%q\n' "${media_notes}"
   } > "${state_file}"
@@ -123,10 +133,9 @@ whep_or_webrtc_endpoint_ok=false
 playback_auth_ok=false
 turn_reachable=false
 media_encryption_ok=false
-transcoding_verified=false
-media_notes="server-side media verification only; browser rendering not exercised"
+media_notes="server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately"
 
-stream_name="verify-main-${smoke_suffix}"
+stream_name="${smoke_stream_prefix}-${smoke_suffix}"
 playback_name=""
 user_id=""
 stream_id=""
@@ -159,48 +168,69 @@ if [[ "${valid_code}" == "200" && "${invalid_code}" == "401" && "${rtmp_code}" =
   playback_auth_ok=true
 fi
 
-if check_turn_reachable; then
-  turn_reachable=true
+if [[ "${VERIFY_TURN:-true}" == "true" ]]; then
+  if check_turn_reachable; then
+    turn_reachable=true
+  fi
+else
+  media_notes="${media_notes}; TURN verification skipped by config"
 fi
 
-info "publishing synthetic RTMP test stream"
+info "publishing deterministic synthetic RTMP test stream for ${smoke_duration}s"
 ffmpeg -loglevel error -re \
-  -f lavfi -i testsrc=size=640x360:rate=15 \
-  -f lavfi -i sine=frequency=1000:sample_rate=48000 \
+  -f lavfi -i "testsrc=size=640x360:rate=15,format=yuv420p" \
+  -f lavfi -i "sine=frequency=1000:sample_rate=48000:beep_factor=2" \
   -c:v libx264 -pix_fmt yuv420p \
   -c:a aac -b:a 128k \
-  -shortest \
-  -f flv "rtmp://127.0.0.1:${RTMP_PORT}/live/${ingest_key}" >/tmp/stream-platform-media-smoke-ffmpeg.log 2>&1 &
+  -t "${smoke_duration}" \
+  -f flv "rtmp://127.0.0.1:${RTMP_PORT}/live/${ingest_key}" >"${ffmpeg_log}" 2>&1 &
 ffmpeg_pid="$!"
 
-if poll_ingest_status "live"; then
+if poll_ingest_status "live" && kill -0 "${ffmpeg_pid}" >/dev/null 2>&1; then
   rtmp_ingest_ok=true
 fi
 
-if ! ffprobe -v error -rw_timeout 5000000 -show_entries stream=codec_type -of default=noprint_wrappers=1 "rtmp://127.0.0.1:${RTMP_PORT}/live/${playback_name}" >/dev/null 2>&1; then
-  rtmp_playback_blocked=true
+if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  if ! ffprobe -v error -rw_timeout 5000000 -show_entries stream=codec_type -of default=noprint_wrappers=1 "rtmp://127.0.0.1:${RTMP_PORT}/live/${playback_name}" >/dev/null 2>&1; then
+    rtmp_playback_blocked=true
+  fi
+else
+  media_notes="${media_notes}; RTMP playback block verification skipped by config"
 fi
 
-if check_whep_http_semantics; then
-  whep_or_webrtc_endpoint_ok=true
+if [[ "${VERIFY_BROWSERLESS_WHEP:-true}" == "true" ]]; then
+  if check_whep_http_semantics; then
+    whep_or_webrtc_endpoint_ok=true
+  fi
+else
+  media_notes="${media_notes}; browserless WHEP verification skipped by config"
 fi
 
 if [[ "${ENABLE_TLS}" == "true" && "${whep_or_webrtc_endpoint_ok}" == "true" ]]; then
   media_encryption_ok=true
 fi
 
-cleanup
-ffmpeg_pid=""
+stop_publisher
 compose exec -T backend curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8000/internal/media/publish-stop?secret=${INTERNAL_API_SECRET}" -H 'content-type: application/json' -d "{\"path\":\"live/${ingest_key}\"}" | grep -q '^200$' || true
 poll_ingest_status "offline" || true
+
+if [[ "${rtmp_ingest_ok}" != "true" && -s "${ffmpeg_log}" ]]; then
+  media_notes="${media_notes}; ffmpeg_publish_log=$(tr '\n' ' ' < "${ffmpeg_log}" | cut -c1-240)"
+fi
 
 write_state
 
 [[ "${nginx_ok}" == "true" ]] || fail "nginx did not answer during media verification"
 [[ "${playback_auth_ok}" == "true" ]] || fail "playback auth path verification failed"
 [[ "${rtmp_ingest_ok}" == "true" ]] || fail "synthetic RTMP ingest did not become live"
-[[ "${rtmp_playback_blocked}" == "true" ]] || fail "direct RTMP playback was not blocked"
-[[ "${whep_or_webrtc_endpoint_ok}" == "true" ]] || fail "WHEP/WebRTC endpoint did not expose expected auth/http semantics"
-[[ "${turn_reachable}" == "true" ]] || fail "TURN service was not reachable on TCP port ${TURN_PORT}"
+if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  [[ "${rtmp_playback_blocked}" == "true" ]] || fail "direct RTMP playback was not blocked"
+fi
+if [[ "${VERIFY_BROWSERLESS_WHEP:-true}" == "true" ]]; then
+  [[ "${whep_or_webrtc_endpoint_ok}" == "true" ]] || fail "WHEP/WebRTC endpoint did not expose expected auth/http semantics"
+fi
+if [[ "${VERIFY_TURN:-true}" == "true" ]]; then
+  [[ "${turn_reachable}" == "true" ]] || fail "TURN service was not reachable on TCP port ${TURN_PORT}"
+fi
 
 success "media smoke verification passed"

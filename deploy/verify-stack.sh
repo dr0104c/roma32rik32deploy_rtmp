@@ -19,6 +19,7 @@ require_cmd jq
 state_file="${SCRIPT_DIR}/.verification-state"
 media_state_file="${SCRIPT_DIR}/.media-smoke-state"
 rm -f "${state_file}" "${media_state_file}"
+mkdir -p "${PROJECT_ROOT}/${VERIFY_REPORT_DIR:-deploy}"
 
 RESULTS=()
 FAILED_CHECKS=()
@@ -34,6 +35,13 @@ record_result() {
     FAILED_CHECKS+=("${name}")
     fail_line "${name}"
   fi
+}
+
+record_info() {
+  local name="$1"
+  local detail="$2"
+  RESULTS+=("[INFO] ${name}: ${detail}")
+  info "${name}: ${detail}"
 }
 
 print_results() {
@@ -64,13 +72,13 @@ for service in postgres backend mediamtx coturn nginx; do
     containers_ok=false
   fi
 done
-record_result "${containers_ok}" "containers running"
+record_result "${containers_ok}" "containers_ok"
 
 backend_ready=false
 if [[ "$(curl -fsS "${curl_base_opts[@]}" "${base_url}/health/ready" | jq -r '.ready')" == "true" ]]; then
   backend_ready=true
 fi
-record_result "${backend_ready}" "backend readiness endpoint"
+record_result "${backend_ready}" "backend_ready"
 
 if ./deploy/media-smoke-test.sh "${media_state_file}"; then
   :
@@ -78,31 +86,40 @@ else
   warn "media smoke script reported failure"
 fi
 
-if [[ ! -f "${media_state_file}" ]]; then
-  fail "media smoke state file was not created"
-fi
+[[ -f "${media_state_file}" ]] || fail "media smoke state file was not created"
 
 set -a
 source "${media_state_file}"
 set +a
 
-record_result "${SMOKE_NGINX_OK}" "nginx public endpoint"
-record_result "${SMOKE_RTMP_INGEST_OK}" "RTMP ingest endpoint"
-record_result "${SMOKE_RTMP_PLAYBACK_BLOCKED}" "RTMP playback blocked"
-record_result "${SMOKE_WHEP_ENDPOINT_OK}" "WHEP/WebRTC endpoint semantics"
-record_result "${SMOKE_PLAYBACK_AUTH_OK}" "playback auth callback path"
-record_result "${SMOKE_TURN_REACHABLE}" "TURN service reachable"
-
-overall_status="pass"
-if [[ "${verify_tls_enabled}" == "true" ]]; then
-  record_result "${SMOKE_MEDIA_ENCRYPTION_OK}" "protected playback channel"
+record_result "${SMOKE_NGINX_OK}" "nginx_ok"
+record_result "${SMOKE_RTMP_INGEST_OK}" "rtmp_ingest_ok"
+if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  record_result "${SMOKE_RTMP_PLAYBACK_BLOCKED}" "rtmp_playback_blocked"
 else
-  RESULTS+=("[PASS] protected playback channel check skipped in HTTP bootstrap mode")
-  pass "protected playback channel check skipped in HTTP bootstrap mode"
+  record_info "rtmp_playback_blocked" "false because verification was skipped by config"
+fi
+if [[ "${VERIFY_BROWSERLESS_WHEP:-true}" == "true" ]]; then
+  record_result "${SMOKE_WHEP_ENDPOINT_OK}" "whep_or_webrtc_endpoint_ok"
+else
+  record_info "whep_or_webrtc_endpoint_ok" "false because verification was skipped by config"
+fi
+record_result "${SMOKE_PLAYBACK_AUTH_OK}" "playback_auth_ok"
+if [[ "${VERIFY_TURN:-true}" == "true" ]]; then
+  record_result "${SMOKE_TURN_REACHABLE}" "turn_reachable"
+else
+  record_info "turn_reachable" "false because verification was skipped by config"
 fi
 
+if [[ "${verify_tls_enabled}" == "true" ]]; then
+  record_result "${SMOKE_MEDIA_ENCRYPTION_OK}" "media_encryption_ok"
+else
+  record_info "media_encryption_ok" "false in HTTP bootstrap mode because playback signaling is not under TLS"
+fi
+
+overall_status="passed"
 if (( ${#FAILED_CHECKS[@]} > 0 )); then
-  overall_status="fail"
+  overall_status="failed"
 fi
 
 failed_checks_json="$(printf '%s\n' "${FAILED_CHECKS[@]:-}" | jq -R . | jq -s 'map(select(length > 0))')"
@@ -113,6 +130,7 @@ fi
 
 {
   printf 'VERIFY_TLS_ENABLED=%q\n' "${verify_tls_enabled}"
+  printf 'VERIFY_DOMAIN=%q\n' "${DOMAIN_NAME}"
   printf 'VERIFY_CONTAINERS_OK=%q\n' "${containers_ok}"
   printf 'VERIFY_BACKEND_READY=%q\n' "${backend_ready}"
   printf 'VERIFY_OVERALL_STATUS=%q\n' "${overall_status}"
@@ -122,7 +140,7 @@ fi
 ./deploy/write-verification-report.sh "${state_file}"
 
 print_results
-if [[ "${overall_status}" != "pass" ]]; then
+if [[ "${overall_status}" != "passed" ]]; then
   fail "verification failed"
 fi
 
