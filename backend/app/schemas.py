@@ -37,37 +37,96 @@ class ChangeUserStatusResponse(BaseModel):
     status: str
 
 
-class CreateStreamRequest(BaseModel):
+class CreateOutputStreamRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    playback_name: str = Field(min_length=1, max_length=128)
+    public_name: str | None = Field(default=None, min_length=1, max_length=128)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    visibility: str = Field(default="private", pattern="^(private|public|unlisted|disabled)$")
+    playback_path: str | None = Field(default=None, min_length=1, max_length=128)
+    source_ingest_session_id: str | None = None
+    metadata_json: dict[str, Any] | None = None
+    playback_name: str | None = None
 
 
-class StreamResponse(BaseModel):
-    stream_id: str
+class UpdateOutputStreamRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    public_name: str | None = Field(default=None, min_length=1, max_length=128)
+    title: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = Field(default=None, max_length=2000)
+    visibility: str | None = Field(default=None, pattern="^(private|public|unlisted|disabled)$")
+    playback_path: str | None = Field(default=None, min_length=1, max_length=128)
+    is_active: bool | None = None
+    source_ingest_session_id: str | None = None
+    metadata_json: dict[str, Any] | None = None
+
+
+class OutputStreamResponse(BaseModel):
+    output_stream_id: str
+    stream_id: str | None = None
     name: str
-    playback_name: str
+    public_name: str
+    title: str
+    description: str | None
+    visibility: str
+    playback_path: str
+    playback_name: str | None = None
     is_active: bool
-    ingest_key: str | None = None
+    source_ingest_session_id: str | None
+    metadata_json: dict[str, Any]
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
 
-class StreamListResponse(BaseModel):
-    streams: list[StreamResponse]
+class OutputStreamListResponse(BaseModel):
+    output_streams: list[OutputStreamResponse]
+    streams: list[OutputStreamResponse] | None = None
+
+
+class ViewerOutputStreamResponse(BaseModel):
+    output_stream_id: str
+    stream_id: str | None = None
+    name: str
+    public_name: str
+    title: str
+    description: str | None
+    visibility: str
+    playback_path: str
+    playback_name: str | None = None
+    is_active: bool
+
+
+class ViewerOutputStreamListResponse(BaseModel):
+    output_streams: list[ViewerOutputStreamResponse]
+    streams: list[ViewerOutputStreamResponse] | None = None
 
 
 class GrantUserRequest(BaseModel):
     user_id: str
 
 
+class GrantGroupRequest(BaseModel):
+    group_id: str
+
+
 class PermissionMutationResponse(BaseModel):
-    stream_id: str
-    user_id: str
+    output_stream_id: str
+    subject_id: str
+    subject_type: str
     granted: bool
 
 
 class CreateIngestSessionRequest(BaseModel):
-    output_stream_id: str
+    current_output_stream_id: str | None = None
+    output_stream_id: str | None = None
+    source_label: str | None = Field(default=None, max_length=255)
     publisher_label: str | None = Field(default=None, max_length=255)
     ingest_key: str | None = Field(default=None, min_length=1, max_length=128)
+    metadata_json: dict[str, Any] | None = None
+
+
+class UpdateIngestSessionBindingRequest(BaseModel):
+    current_output_stream_id: str | None = None
 
 
 class RotateIngestKeyResponse(BaseModel):
@@ -83,14 +142,16 @@ class RevokeIngestSessionResponse(BaseModel):
 
 class IngestSessionResponse(BaseModel):
     ingest_session_id: str
-    output_stream_id: str | None
-    ingest_key: str
+    source_label: str | None
     status: str
-    publisher_label: str | None
+    created_at: datetime | None
+    started_at: datetime | None
+    ended_at: datetime | None
+    revoked_at: datetime | None
     last_seen_at: datetime | None
-    last_publish_started_at: datetime | None
-    last_publish_stopped_at: datetime | None
-    last_error: str | None
+    current_output_stream_id: str | None
+    metadata_json: dict[str, Any]
+    ingest_key: str | None = None
 
 
 class IngestSessionListResponse(BaseModel):
@@ -99,13 +160,17 @@ class IngestSessionListResponse(BaseModel):
 
 class PlaybackTokenRequest(BaseModel):
     user_id: str
-    stream_id: str
+    output_stream_id: str | None = None
+    stream_id: str | None = None
+    playback_path: str | None = None
 
 
 class PlaybackTokenResponse(BaseModel):
     token: str
     expires_at: datetime
     playback_url: str
+    output_stream_id: str
+    playback_path: str
 
 
 class MediaAuthRequest(BaseModel):
@@ -152,13 +217,14 @@ class ViewerConfigResponse(BaseModel):
 
 
 class ViewerStreamsResponse(BaseModel):
-    streams: list[dict[str, Any]]
+    streams: list[ViewerOutputStreamResponse]
 
 
 class ViewerPlaybackSessionResponse(BaseModel):
     playback_token: str
     expires_at: datetime
-    stream: dict[str, Any]
+    output_stream: dict[str, Any] | None = None
+    stream: dict[str, Any] | None = None
     playback: dict[str, Any]
 
 

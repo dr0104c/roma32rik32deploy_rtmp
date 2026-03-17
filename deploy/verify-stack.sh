@@ -94,7 +94,13 @@ set +a
 
 record_result "${SMOKE_NGINX_OK}" "nginx_ok"
 record_result "${SMOKE_RTMP_INGEST_OK}" "rtmp_ingest_ok"
+record_result "${SMOKE_VIEWER_API_HIDES_INGEST_KEY}" "viewer_api_hides_ingest_key"
+record_result "${SMOKE_PLAYBACK_TOKEN_REJECTS_INGEST_KEY}" "playback_token_rejects_ingest_key"
+record_result "${SMOKE_PLAYBACK_PATH_IS_DISTINCT_FROM_INGEST_KEY}" "playback_path_is_distinct_from_ingest_key"
+record_result "${SMOKE_WHEP_URL_USES_PLAYBACK_PATH}" "whep_url_uses_playback_path"
 if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  record_result "${SMOKE_RTMP_READ_BLOCKED_ON_INGEST_PATH}" "rtmp_read_blocked_on_ingest_path"
+  record_result "${SMOKE_RTMP_READ_BLOCKED_ON_OUTPUT_PATH}" "rtmp_read_blocked_on_output_path"
   record_result "${SMOKE_RTMP_PLAYBACK_BLOCKED}" "rtmp_playback_blocked"
 else
   record_info "rtmp_playback_blocked" "false because verification was skipped by config"

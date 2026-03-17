@@ -1,524 +1,272 @@
-# Stream Platform Single-Node Deploy
+# Stream Platform
 
-Production-like single-operator foundation for the streaming platform. The existing architecture is preserved:
+Платформа стриминга с:
 
-- ingest = RTMP
-- viewer delivery = WebRTC/WHEP
-- viewer access = backend-issued tokens
-- direct RTMP playback = disabled
-- stack = nginx + backend + postgres + MediaMTX + coturn
+- RTMP ingest
+- viewer playback через WebRTC/WHEP
+- viewer ACL на `output_stream`
+- всегда запрещённым direct RTMP playback
 
-No transcoder is included in this stack. The media server relays the ingested stream; it does not claim to transcode it.
+## Доменная Модель Продукта
 
-## One-shot Deploy
+### `ingest_session`
 
-Clean Debian Bookworm server:
+`ingest_session` — это сущность со стороны публикации.
 
-```bash
-curl -fsSL https://gitlab.roma32rik.ru/roman1/server_deploy/-/raw/main/bootstrap-install.sh -o bootstrap-install.sh
-chmod +x bootstrap-install.sh
-sudo ./bootstrap-install.sh
-```
+- хранит `ingest_key`
+- управляет жизненным циклом публикации: `ready`, `live`, `ended`, `revoked`
+- может быть перевязана на другой `output_stream`
+- существует для управления ingest, а не для viewer discovery
 
-Local checkout on Debian 12:
+### `output_stream`
 
-```bash
-sudo ./bootstrap-install.sh
-```
+`output_stream` — это сущность со стороны просмотра.
 
-The deploy flow is one-shot:
+- имеет стабильный viewer identifier: `output_stream.id`
+- имеет стабильный viewer path: `output_stream.playback_path`
+- возвращается viewer API
+- является единственной ACL-сущностью для пользователей и групп
+- является единственной сущностью для выдачи playback token
 
-- install packages and Docker
-- sync project into `/opt/stream-platform`
-- bootstrap secrets and runtime configs
-- start the stack
-- run DB migrations
-- wait for readiness
-- run media smoke verification
-- run full automated verification
-- write final verification reports
+### Почему это разные сущности
 
-## Backend MVP Domain
+- ротация publish secret и viewer access — это разные задачи
+- ingest credentials не должны становиться viewer identifier
+- один ingest lifecycle object можно перевязать без изменения viewer ACL модели
+- viewer API должны оставаться `output_stream`-centric, даже если ingest меняется
 
-The backend now includes a minimal domain layer for:
+### Область ACL
 
-- viewer enrollment
-- admin moderation
-- output stream registration
-- direct user permissions
-- prepared group permission tables
-- playback token issuance
-- internal media auth and ingest lifecycle events
+ACL назначается только на `output_stream`.
 
-Current persistent objects:
+- `stream_permissions_user.output_stream_id`
+- `stream_permissions_group.output_stream_id`
+- viewer ACL никогда не выдаётся на `ingest_session`
 
-- `users`
-- `user_status_history`
-- `output_streams`
-- `ingest_sessions`
-- `stream_permissions_user`
-- `groups`
-- `group_members`
-- `stream_permissions_group`
-- `audit_logs`
+## Path Mapping
 
-## Ingest Lifecycle And Media Mapping
+- ingest publish path: `live/{ingest_session.ingest_key}`
+- viewer playback path: `live/{output_stream.playback_path}`
+- `ingest_key` не является viewer identifier
+- `playback_path` не является publish secret
 
-Ingest session lifecycle states:
+Каноническое разрешение playback:
 
-- `created`
-- `connecting`
-- `live`
-- `offline`
-- `revoked`
-- `error`
+- запрос playback token принимает `output_stream_id`
+- запрос playback token также принимает `playback_path`
+- ingest key не должен работать как замена ни одному из этих идентификаторов
 
-Mapping rules in the current MVP:
+## Модель Безопасности
 
-- `output_stream.id` is the backend access object and is used in playback token claim `sid`
-- `output_stream.playback_name` is the public viewer path segment used for WHEP/WebRTC read requests
-- `output_stream.ingest_key` is the legacy open-ingest path segment
-- `ingest_sessions.ingest_key` is the stable publisher key used for keyed ingest mode and key rotation
-- MediaMTX publish path remains `live/{key}`
-- viewer playback path remains `live/{playback_name}`
+- RTMP ingest разрешён
+- RTMP playback всегда запрещён
+- playback token выдаётся только для `output_stream`
+- ingest key никогда не раскрывается viewer-facing API
+- internal media auth endpoints не являются публичными viewer API
 
-Publish-start handling is enforced through MediaMTX auth callbacks today. Publish-stop handling is implemented as a backend-compatible internal hook endpoint and used by smoke tests; wiring a native MediaMTX stop hook is still best-effort and depends on the chosen runtime image/tooling.
+Правила реализации:
 
-## API Endpoints
+- `POST /api/v1/playback-token` резолвит только `output_stream_id` или `playback_path`
+- если `playback_path` совпадает с существующим `ingest_key`, запрос падает с `ingest_key_not_playback_identifier`
+- viewer API возвращают только output-stream payload
+- internal `/internal/media/*` endpoints требуют `INTERNAL_API_SECRET`, если защита включена
 
-Public:
+## Admin Flow
+
+1. создать `output_stream`
+2. создать `ingest_session`
+3. привязать ingest к output через `current_output_stream_id`
+4. выдать пользователю или группе доступ к `output_stream`
+
+Нужные endpoints:
+
+- `POST /api/v1/admin/output-streams`
+- `POST /api/v1/admin/ingest-sessions`
+- `PATCH /api/v1/admin/ingest-sessions/{ingest_session_id}`
+- `POST /api/v1/admin/output-streams/{output_stream_id}/grant-user`
+- `POST /api/v1/admin/output-streams/{output_stream_id}/grant-group`
+
+Compatibility aliases под `/api/v1/admin/streams*` сохранены, но это только слой совместимости. Каноническая модель теперь `output_stream`-centric.
+
+## Viewer Flow
+
+1. enroll
+2. approve
+3. получить список доступных `output_stream`
+4. запросить playback token для `output_stream`
+5. смотреть через WebRTC/WHEP
+
+Нужные endpoints:
 
 - `POST /api/v1/enroll`
-- `GET /api/v1/me/{user_id}`
+- `POST /api/v1/admin/users/{user_id}/approve`
 - `GET /api/v1/streams?user_id=...`
-- `POST /api/v1/playback-token`
-
-Admin, protected by `X-Admin-Secret`:
-
-- `GET /api/v1/admin/users?status=pending|approved|blocked|rejected`
-- `POST /api/v1/admin/users/{id}/approve`
-- `POST /api/v1/admin/users/{id}/reject`
-- `POST /api/v1/admin/users/{id}/block`
-- `POST /api/v1/admin/streams`
-- `GET /api/v1/admin/streams`
-- `POST /api/v1/admin/streams/{stream_id}/grant-user`
-- `POST /api/v1/admin/streams/{stream_id}/revoke-user`
-- `POST /api/v1/admin/ingest-sessions`
-- `GET /api/v1/admin/ingest-sessions`
-- `POST /api/v1/admin/ingest-sessions/{id}/rotate-key`
-- `POST /api/v1/admin/ingest-sessions/{id}/revoke`
-
-Internal:
-
-- `POST /internal/media/auth`
-- `POST /internal/media/publish-stop`
-- compatibility alias: `POST /internal/mediamtx/auth`
-
-Legacy helper endpoints for the lightweight web viewer are still present:
-
 - `POST /api/v1/viewer/session`
-- `GET /api/v1/viewer/me`
-- `GET /api/v1/viewer/config`
 - `GET /api/v1/viewer/streams`
-- `POST /api/v1/viewer/streams/{stream_id}/playback-session`
+- `POST /api/v1/playback-token`
+- `POST /api/v1/viewer/streams/{output_stream_id}/playback-session`
 
-## Auth Model
+## Модель Верификации
 
-- admin auth uses bootstrap shared secret `X-Admin-Secret`
-- playback auth uses short-lived JWT `scope=playback`
-- viewer helper auth uses short-lived JWT `scope=viewer`
-- internal media auth uses `INTERNAL_API_SECRET`
-- ingest publish auth mode is controlled by `INGEST_AUTH_MODE=open|keyed`
+Server-side верификация в этом репозитории доказывает:
 
-This is still MVP auth. There is no full admin identity/RBAC system yet.
+- список стримов строится по `output_stream`
+- viewer-facing ответы не содержат `ingest_key`
+- playback token flow отвергает ingest-key semantics
+- RTMP publish auth принимает `live/{ingest_key}`
+- RTMP read запрещён и на `live/{ingest_key}`, и на `live/{output_stream.playback_path}`
+- WHEP/WebRTC auth path строится из `playback_path`
 
-## Playback Token Semantics
+Что здесь не проверяется браузером:
 
-Playback token is `HS256` JWT with:
+- browser media rendering
+- ICE success в реальном браузере
+- фактическое декодирование и воспроизведение аудио/видео в реальной вкладке браузера
 
-- `sub` = user id
-- `sid` = output stream id
-- `scope` = `playback`
-- `jti`
-- `iat`
-- `exp`
+Encrypted playback и transcoding — разные вещи:
 
-Validation checks:
+- encrypted playback означает, что WHEP/WebRTC signaling и доставка работают через TLS, если TLS включён
+- transcoding означает ре-энкодинг или трансформацию медиа
+- это разные свойства
+- текущая verification-report логика отражает их отдельно
 
-- signature valid
-- token not expired
-- `scope=playback`
-- requested `playback_name` matches token `sid`
-- user still exists and is `approved`
-- permission still exists at validation time
+## E2E Proof Checklist
 
-## User Lifecycle
+В репозитории теперь есть автоматическое доказательство следующего:
 
-- `pending`: created by enroll
-- `approved`: can list streams and receive playback token
-- `rejected`: denied access
-- `blocked`: denied access
+- viewer API не раскрывает ingest key
+- playback token отвергает ingest key semantics
+- RTMP publish работает на ingest path
+- RTMP read запрещён на ingest path
+- RTMP read запрещён на output path
+- WHEP/WebRTC playback URL использует `playback_path`, а не `ingest_key`
 
-Critical moderation actions are written to `user_status_history` and `audit_logs`.
+Точки запуска proof:
 
-## Stream Lifecycle
+- `pytest backend/tests/test_product_model.py`
+- `./deploy/e2e-product-model.sh`
+- `./deploy/verify-stack.sh`
 
-- admin creates stream with `playback_name` and legacy stream-level `ingest_key`
-- admin may create dedicated ingest sessions with stable publisher keys
-- publisher ingests to `rtmp://HOST:RTMP_PORT/live/{ingest_key}`
-- in `INGEST_AUTH_MODE=open`, legacy stream ingest keys still work for MVP compatibility
-- in `INGEST_AUTH_MODE=keyed`, publish requires a matching active `ingest_sessions.ingest_key`
-- MediaMTX publish auth marks the matching `ingest_session` as `connecting -> live`
-- publish stop transitions the session to `offline`
-- revoked ingest sessions cannot publish
-- viewers access `live/{playback_name}` only through WebRTC/WHEP token auth
+## Короткий Пример
 
-Ingest key rotation and revoke:
+Создать `output_stream`:
 
-- `POST /api/v1/admin/ingest-sessions/{id}/rotate-key` issues a new stable publisher key
-- `POST /api/v1/admin/ingest-sessions/{id}/revoke` marks the ingest session revoked
-- direct RTMP playback stays denied in all modes
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/output-streams \
+  -H 'X-Admin-Secret: change-me' \
+  -H 'content-type: application/json' \
+  -d '{"name":"Main Stage","public_name":"main-stage","title":"Main Stage","playback_path":"main-stage-watch"}'
+```
 
-## Current MVP Limitations
+Создать `ingest_session`, привязанную к этому output:
 
-- no RTMPS ingest yet
-- no real admin identity provider yet
-- no transcoding or adaptive bitrate pipeline
-- group permission tables exist, but smoke currently exercises direct user grants
-- WHEP test is auth-path verification, not full browser playback automation
-- publish-stop callback wiring is backend-ready and smoke-tested, but native MediaMTX stop hook integration remains runtime-dependent
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/ingest-sessions \
+  -H 'X-Admin-Secret: change-me' \
+  -H 'content-type: application/json' \
+  -d '{"current_output_stream_id":"OUTPUT_STREAM_ID","source_label":"encoder-a"}'
+```
 
-## Automated Media Verification
+Публиковать RTMP через `ingest_key`:
 
-The deploy now ends with a dedicated verification phase:
+```bash
+ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=15 -f lavfi -i sine=frequency=1000 \
+  -c:v libx264 -pix_fmt yuv420p -c:a aac -f flv \
+  "rtmp://127.0.0.1:1935/live/INGEST_KEY"
+```
 
-- `deploy/verify-stack.sh`
-- `deploy/media-smoke-test.sh`
-- `deploy/write-verification-report.sh`
+Запросить playback token по `output_stream_id`:
 
-Verification includes:
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/playback-token \
+  -H 'content-type: application/json' \
+  -d '{"user_id":"USER_ID","output_stream_id":"OUTPUT_STREAM_ID"}'
+```
 
-- backend `/health`, `/health/live`, `/health/ready`
-- nginx public endpoint availability
-- synthetic RTMP ingest using `ffmpeg` test source
-- MediaMTX ingest lifecycle visibility through backend API
-- direct RTMP playback denial
-- playback token + internal auth callback path
-- WHEP/WebRTC endpoint HTTP semantics with valid and invalid token
-- TURN service reachability on the published TCP port
-- explicit separation of encrypted playback vs transcoding
-- JSON and TXT verification reports
+WHEP URL использует `playback_path`:
 
-Generated reports:
+```text
+http://127.0.0.1:8080/webrtc/live/main-stage-watch/whep?token=...
+```
+
+А не:
+
+```text
+http://127.0.0.1:8080/webrtc/live/INGEST_KEY/whep?token=...
+```
+
+## Тестирование
+
+### API integration proof
+
+Запускается в Python test stack и доказывает:
+
+- enroll -> approve -> create output stream -> create ingest session -> grant access
+- `GET /api/v1/streams` возвращает `output_stream` и не раскрывает ingest linkage
+- viewer session и viewer stream list не раскрывают ingest linkage
+- playback token работает с `output_stream_id`
+- playback token работает с `playback_path`
+- playback token падает с `ingest_key`
+- internal media auth принимает publish на ingest path
+- internal media auth запрещает RTMP read на ingest path и output path
+- WHEP auth работает по `playback_path`
+
+Запуск:
+
+```bash
+pytest backend/tests/test_product_model.py
+```
+
+### Deploy-side product-model proof
+
+Запускается против развернутого стека и дополнительно использует реальный synthetic RTMP publish через `ffmpeg`.
+
+Запуск:
+
+```bash
+./deploy/e2e-product-model.sh
+```
+
+Этот скрипт использует:
+
+- `POST /api/v1/enroll`
+- admin approval
+- admin output-stream creation
+- admin ingest-session creation
+- output-stream ACL grant
+- public и viewer stream listing
+- playback token positive и negative cases
+- synthetic RTMP publish на `live/{ingest_key}`
+- RTMP read deny checks для ingest path и output path
+- browserless WHEP HTTP auth-path verification
+
+## Результаты Deploy Verification
+
+`./deploy/verify-stack.sh` пишет:
 
 - `deploy/verification-report.json`
 - `deploy/verification-report.txt`
 
-Report fields include:
+Важные поля отчёта:
 
-- `containers_ok`
-- `backend_ready`
-- `nginx_ok`
+- `viewer_api_hides_ingest_key`
+- `playback_token_rejects_ingest_key`
+- `rtmp_read_blocked_on_ingest_path`
+- `rtmp_read_blocked_on_output_path`
+- `playback_path_is_distinct_from_ingest_key`
+- `whep_url_uses_playback_path`
+
+Они идут в дополнение к:
+
 - `rtmp_ingest_ok`
 - `rtmp_playback_blocked`
 - `whep_or_webrtc_endpoint_ok`
-- `turn_reachable`
 - `playback_auth_ok`
-- `media_encryption_ok`
-- `transcoding_enabled`
-- `transcoding_verified`
-- `browser_level_rendering_verified`
-- `overall_status`
-- `failed_checks`
 
-`bootstrap-install.sh` works in two modes:
+## Операционные Замечания
 
-- local checkout mode: if `install.sh` and `deploy/install.sh` are рядом, it uses the local repository
-- bootstrap mode: if only the bootstrap script is present, it clones the repository into `/opt/stream-platform`
-
-The deploy succeeds only if:
-
-- packages are installed
-- docker stack is healthy
-- readiness checks pass
-- end-to-end smoke checks pass
-
-## Deployment Modes
-
-- HTTP bootstrap mode: `ENABLE_TLS=false`
-- HTTPS mode with ACME: `ENABLE_TLS=true`
-
-HTTPS mode requires:
-
-- `DOMAIN_NAME` pointing to the VPS
-- `ACME_EMAIL`
-- `NGINX_HTTP_PORT=80`
-- `NGINX_HTTPS_PORT=443`
-
-The installer starts nginx in HTTP bootstrap mode first, obtains the certificate, re-renders nginx runtime config, then switches public serving to HTTPS.
-
-## What Gets Installed
-
-The installer:
-
-1. validates Debian Bookworm
-2. installs base packages including `curl`, `git`, `sudo`, `jq`, `ffmpeg`
-3. applies safe host hardening
-4. installs Docker Engine and Docker Compose plugin
-5. syncs the project into `/opt/stream-platform`
-6. creates `.env` from `.env.example` if missing
-7. generates strong secrets for unset placeholder values
-8. enforces `chmod 600 /opt/stream-platform/.env`
-9. renders runtime configs for nginx, MediaMTX, and coturn
-10. starts the compose stack
-11. applies SQL migrations
-12. configures TLS if enabled
-13. applies firewall rules
-14. installs backup/cert-renew/health timers
-15. waits for actual readiness
-16. runs `deploy/verify-stack.sh`
-17. writes verification reports
-18. prints a final PASS/FAIL summary with access URLs
-
-## Exact Ports
-
-Default public ports:
-
-- `8080/tcp` HTTP bootstrap nginx
-- `8443/tcp` HTTPS nginx
-- `1935/tcp` RTMP ingest
-- `3478/tcp,udp` TURN/STUN
-- `5349/tcp,udp` TURN TLS
-- `8189/tcp,udp` MediaMTX WebRTC ICE
-- `49160-49200/udp` TURN relay range
-
-Internal-only:
-
-- postgres `5432`
-- backend `8000`
-- MediaMTX auth callbacks through backend `/internal/*`
-
-For full public HTTPS mode, set:
-
-- `NGINX_HTTP_PORT=80`
-- `NGINX_HTTPS_PORT=443`
-
-## Security And Media Semantics
-
-What is actually true in this stack:
-
-- ingest uses plain RTMP
-- plain RTMP ingest is not encrypted
-- direct RTMP playback is disabled
-- viewer playback goes through WebRTC/WHEP
-- WebRTC transport is encrypted when served through HTTPS/TLS
-- backend-issued playback tokens gate viewer playback
-- internal backend endpoints are denied from public nginx access
-
-What is not claimed:
-
-- no transcoding is performed
-- no claim that RTMP ingest is encrypted unless RTMPS is added later
-- no claim of full real-browser playback automation inside smoke tests
-
-## Encrypted Playback vs Transcoding
-
-These are separate concerns and the deploy report treats them separately:
-
-- `ingest accepted`: RTMP publish was accepted by MediaMTX and surfaced in backend lifecycle state
-- `stream republished to WebRTC/WHEP`: the viewer path and tokenized auth reached the media layer successfully
-- `playback transport encrypted`: only reported as `true` when TLS is enabled and WHEP/WebRTC verification passes
-- `transcoding absent / not configured`: current default mode
-
-Optional env flag:
-
-- `ENABLE_FFMPEG_TRANSCODE=false|true`
-- `ENABLE_AUTOMATED_MEDIA_VERIFY=true|false`
-- `VERIFY_TURN=true|false`
-- `VERIFY_BROWSERLESS_WHEP=true|false`
-- `VERIFY_RTMP_PLAYBACK_BLOCK=true|false`
-- `VERIFY_REPORT_DIR=deploy`
-- `MEDIA_SMOKE_TEST_DURATION_SEC=12`
-- `MEDIA_SMOKE_TEST_STREAM_NAME=verification-smoke`
-
-Right now this flag is diagnostic only. The default stack remains passthrough/relay oriented and does not add a transcoder pipeline automatically. If the flag is set to `true`, the verification report still marks transcoding as unverified unless a real transcoding path is added later.
-
-## Smoke / E2E Verification
-
-Main smoke entrypoint:
-
-```bash
-cd /opt/stream-platform
-./deploy/verify-stack.sh
-```
-
-Compatibility wrapper:
-
-```bash
-cd /opt/stream-platform
-./deploy/smoke-test.sh
-```
-
-The verification stage checks:
-
-- backend `/health`, `/health/live`, `/health/ready`
-- nginx serves the viewer site
-- synthetic enroll / approve / stream / grant / token path
-- internal media auth accepts valid playback token
-- invalid playback token is rejected
-- ingest session lifecycle transitions `created -> live -> offline`
-- RTMP ingest works using generated `ffmpeg` test source
-- direct RTMP playback is denied
-- WHEP/WebRTC endpoint exposes the expected authenticated HTTP semantics
-- TURN service is reachable
-- final machine-readable and human-readable reports are written
-
-Browser-level rendering is not claimed by this verification. The report explicitly records that verification is server-side transport and auth readiness, not a real browser playback assertion.
-
-`deploy/media-smoke-test.sh` is also intentionally server-side only:
-
-- it publishes a deterministic synthetic `ffmpeg` source for a bounded duration
-- it verifies ingest lifecycle and WHEP auth semantics
-- it verifies direct RTMP playback stays blocked
-- it cleans up the publisher process and temporary files
-- it does not claim real browser rendering
-
-## HTTP Bootstrap And HTTPS Mode
-
-HTTP bootstrap:
-
-```bash
-sudo ENABLE_TLS=false ./bootstrap-install.sh
-```
-
-HTTPS mode:
-
-```bash
-sudo ENABLE_TLS=true DOMAIN_NAME=stream.example.com ACME_EMAIL=ops@example.com ./bootstrap-install.sh
-```
-
-For HTTPS mode:
-
-- DNS for `DOMAIN_NAME` must already point to the VPS
-- ports `80/tcp` and `443/tcp` must be reachable
-- the install will fail fast if ACME prerequisites are missing
-
-## Typical Verification Problems
-
-- `RTMP ingest accepted = false`
-  Usually wrong firewall/NAT exposure for `${RTMP_PORT}` or MediaMTX not healthy.
-- `WHEP/WebRTC endpoint OK = false`
-  Usually a playback token/auth path mismatch or nginx routing issue under `/webrtc/`.
-- `protected playback channel = false`
-  Expected in bootstrap HTTP mode. Enable TLS for public encrypted signaling.
-- `TURN reachable = false`
-  Usually blocked `TURN_PORT` / `TURN_TLS_PORT` or coturn did not bind as expected.
-- `transcoding verified = false`
-  Expected in the current default stack because no transcoder is configured.
-- `rtmp_playback_blocked = false`
-  Hard failure. Viewer playback must stay on WebRTC/WHEP only.
-
-## Restore After 7-Day VPS Rebuild
-
-To rebuild a short-lived VPS without losing state, keep these artifacts:
-
-- `.env`
-- `certs/letsencrypt`
-- PostgreSQL backups from `/var/backups/stream-platform/postgres`
-
-Basic restore flow:
-
-1. redeploy the node with `sudo ./bootstrap-install.sh`
-2. restore `.env`
-3. restore certificates if TLS is enabled
-4. run `./deploy/restore-postgres.sh /path/to/backup.sql.gz`
-5. run `./deploy/e2e-smoke.sh`
-
-WHEP verification is best-effort and honest:
-
-- it confirms the tokenized playback auth path works
-- it confirms invalid token is rejected
-- it does not claim full browser-rendered playback automation
-
-## HTTP Bootstrap And HTTPS Renewal
-
-Initial TLS flow:
-
-1. set `ENABLE_TLS=true`
-2. set `DOMAIN_NAME`
-3. set `ACME_EMAIL`
-4. run `sudo ./bootstrap-install.sh`
-5. nginx starts on HTTP
-6. `deploy/certbot-renew.sh` requests the certificate
-7. nginx switches to HTTPS runtime mode
-
-Renewal:
-
-- `stream-platform-cert-renew.timer` runs automatically
-- `deploy/certbot-renew.sh` performs renew
-- nginx is reloaded after renewal
-
-## Backup / Restore
-
-Manual backup:
-
-```bash
-cd /opt/stream-platform
-./deploy/backup-postgres.sh
-```
-
-Manual restore:
-
-```bash
-cd /opt/stream-platform
-./deploy/restore-postgres.sh /var/backups/stream-platform/postgres/stream-platform-postgres-YYYYMMDDTHHMMSSZ.sql.gz
-```
-
-Stored data to preserve across VPS rebuilds:
-
-- `/opt/stream-platform/.env`
-- `/opt/stream-platform/certs/letsencrypt`
-- `/var/backups/stream-platform/postgres/*.sql.gz`
-
-## Rebuilding A 7-Day VPS
-
-Recommended recovery flow:
-
-1. provision fresh Debian Bookworm VPS
-2. run bootstrap installer
-3. restore saved `.env`
-4. restore `certs/letsencrypt` if HTTPS certs already exist
-5. rerun `sudo ./bootstrap-install.sh`
-6. restore latest PostgreSQL backup if state matters
-7. rerun `./deploy/e2e-smoke.sh`
-
-## Troubleshooting
-
-Check status:
-
-```bash
-cd /opt/stream-platform
-sudo docker compose --env-file .env -f docker/compose.yml ps
-./deploy/health-summary.sh
-```
-
-Short logs only:
-
-```bash
-sudo docker logs stream-platform-backend --tail 50
-sudo docker logs stream-platform-nginx --tail 50
-sudo docker logs stream-platform-mediamtx --tail 50
-sudo docker logs stream-platform-postgres --tail 50
-sudo docker logs stream-platform-coturn --tail 50
-```
-
-## Important Files
-
-- [`bootstrap-install.sh`](/home/debian/codex/2rev/bootstrap-install.sh)
-- [`install.sh`](/home/debian/codex/2rev/install.sh)
-- [`deploy/install.sh`](/home/debian/codex/2rev/deploy/install.sh)
-- [`deploy/e2e-smoke.sh`](/home/debian/codex/2rev/deploy/e2e-smoke.sh)
-- [`deploy/backup-postgres.sh`](/home/debian/codex/2rev/deploy/backup-postgres.sh)
-- [`deploy/restore-postgres.sh`](/home/debian/codex/2rev/deploy/restore-postgres.sh)
-- [`deploy/certbot-renew.sh`](/home/debian/codex/2rev/deploy/certbot-renew.sh)
-- [`docker/compose.yml`](/home/debian/codex/2rev/docker/compose.yml)
+- не используйте `ingest_key` во viewer code
+- не документируйте `ingest_key` как playback identifier
+- не ослабляйте RTMP playback deny
+- не раскрывайте internal `/internal/media/*` endpoints viewer'ам
+- если используются legacy `/api/v1/admin/streams*` routes, считайте их compatibility aliases над той же `output_stream` моделью

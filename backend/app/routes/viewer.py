@@ -4,8 +4,8 @@ from sqlalchemy.orm import Session
 from ..auth import require_viewer_user
 from ..db import get_db
 from ..models import User
-from ..schemas import ViewerConfigResponse, ViewerMeResponse, ViewerSessionRequest, ViewerSessionResponse, ViewerStreamsResponse, ViewerPlaybackSessionResponse
-from ..services.playback import create_viewer_token, issue_playback_token
+from ..schemas import ViewerConfigResponse, ViewerMeResponse, ViewerOutputStreamResponse, ViewerSessionRequest, ViewerSessionResponse, ViewerStreamsResponse, ViewerPlaybackSessionResponse
+from ..services.playback import create_viewer_token, issue_playback_token_for_output_stream
 from ..services.viewer import get_user, get_user_by_client_code, list_user_stream_payloads, viewer_config
 
 
@@ -45,20 +45,21 @@ def config() -> ViewerConfigResponse:
 
 @router.get("/streams", response_model=ViewerStreamsResponse)
 def viewer_streams(user: User = Depends(require_viewer_user), db: Session = Depends(get_db)) -> ViewerStreamsResponse:
-    return ViewerStreamsResponse(streams=list_user_stream_payloads(db, user.id))
+    return ViewerStreamsResponse(streams=[ViewerOutputStreamResponse(**stream) for stream in list_user_stream_payloads(db, user.id)])
 
 
 @router.get("/streams/{user_id}", response_model=ViewerStreamsResponse)
 def viewer_streams_by_user_id(user_id: str, db: Session = Depends(get_db)) -> ViewerStreamsResponse:
-    return ViewerStreamsResponse(streams=list_user_stream_payloads(db, user_id))
+    return ViewerStreamsResponse(streams=[ViewerOutputStreamResponse(**stream) for stream in list_user_stream_payloads(db, user_id)])
 
 
 @router.post("/streams/{stream_id}/playback-session", response_model=ViewerPlaybackSessionResponse)
 def viewer_playback_session(stream_id: str, user: User = Depends(require_viewer_user), db: Session = Depends(get_db)) -> ViewerPlaybackSessionResponse:
-    token, expires_at, playback_url = issue_playback_token(db, user_id=user.id, stream_id=stream_id)
+    token, expires_at, playback_url, output_stream = issue_playback_token_for_output_stream(db, user_id=user.id, output_stream_id=stream_id)
     return ViewerPlaybackSessionResponse(
         playback_token=token,
         expires_at=expires_at,
-        stream={"id": stream_id},
+        output_stream={"id": output_stream.id, "playback_path": output_stream.playback_path},
+        stream={"id": output_stream.id, "playback_path": output_stream.playback_path},
         playback={"webrtc_url": playback_url},
     )

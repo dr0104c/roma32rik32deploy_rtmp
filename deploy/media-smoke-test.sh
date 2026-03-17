@@ -90,7 +90,7 @@ poll_ingest_status() {
   local payload current
   local attempt
   for attempt in $(seq 1 20); do
-    payload="$(curl_api "${base_url}/api/v1/admin/ingest-sessions?output_stream_id=${stream_id}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+    payload="$(curl_api "${base_url}/api/v1/admin/ingest-sessions?current_output_stream_id=${stream_id}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
     current="$(echo "${payload}" | jq -r ".ingest_sessions[] | select(.ingest_session_id == \"${ingest_session_id}\") | .status")"
     if [[ "${current}" == "${expected}" ]]; then
       return 0
@@ -115,6 +115,12 @@ write_state() {
     printf 'SMOKE_NGINX_OK=%q\n' "${nginx_ok}"
     printf 'SMOKE_RTMP_INGEST_OK=%q\n' "${rtmp_ingest_ok}"
     printf 'SMOKE_RTMP_PLAYBACK_BLOCKED=%q\n' "${rtmp_playback_blocked}"
+    printf 'SMOKE_VIEWER_API_HIDES_INGEST_KEY=%q\n' "${viewer_api_hides_ingest_key}"
+    printf 'SMOKE_PLAYBACK_TOKEN_REJECTS_INGEST_KEY=%q\n' "${playback_token_rejects_ingest_key}"
+    printf 'SMOKE_RTMP_READ_BLOCKED_ON_INGEST_PATH=%q\n' "${rtmp_read_blocked_on_ingest_path}"
+    printf 'SMOKE_RTMP_READ_BLOCKED_ON_OUTPUT_PATH=%q\n' "${rtmp_read_blocked_on_output_path}"
+    printf 'SMOKE_PLAYBACK_PATH_IS_DISTINCT_FROM_INGEST_KEY=%q\n' "${playback_path_is_distinct_from_ingest_key}"
+    printf 'SMOKE_WHEP_URL_USES_PLAYBACK_PATH=%q\n' "${whep_url_uses_playback_path}"
     printf 'SMOKE_WHEP_ENDPOINT_OK=%q\n' "${whep_or_webrtc_endpoint_ok}"
     printf 'SMOKE_PLAYBACK_AUTH_OK=%q\n' "${playback_auth_ok}"
     printf 'SMOKE_TURN_REACHABLE=%q\n' "${turn_reachable}"
@@ -129,6 +135,12 @@ write_state() {
 nginx_ok=false
 rtmp_ingest_ok=false
 rtmp_playback_blocked=false
+viewer_api_hides_ingest_key=false
+playback_token_rejects_ingest_key=false
+rtmp_read_blocked_on_ingest_path=false
+rtmp_read_blocked_on_output_path=false
+playback_path_is_distinct_from_ingest_key=false
+whep_url_uses_playback_path=false
 whep_or_webrtc_endpoint_ok=false
 playback_auth_ok=false
 turn_reachable=false
@@ -142,20 +154,63 @@ stream_id=""
 ingest_session_id=""
 ingest_key=""
 playback_token=""
+playback_url=""
+user_client_code=""
 
 info "creating verification user and stream"
-user_id="$(json_post "${base_url}/api/v1/enroll" "{\"display_name\":\"Verification User ${smoke_suffix}\"}" | jq -r '.user_id')"
+user_payload="$(json_post "${base_url}/api/v1/enroll" "{\"display_name\":\"Verification User ${smoke_suffix}\"}")"
+user_id="$(echo "${user_payload}" | jq -r '.user_id')"
+user_client_code="$(echo "${user_payload}" | jq -r '.client_code')"
 curl_api -X POST "${base_url}/api/v1/admin/users/${user_id}/approve" -H "X-Admin-Secret: ${ADMIN_SECRET}" >/dev/null
 
-stream_payload="$(json_post "${base_url}/api/v1/admin/streams" "{\"name\":\"${stream_name}\",\"playback_name\":\"${stream_name}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
-stream_id="$(echo "${stream_payload}" | jq -r '.stream_id')"
-playback_name="$(echo "${stream_payload}" | jq -r '.playback_name')"
-json_post "${base_url}/api/v1/admin/streams/${stream_id}/grant-user" "{\"user_id\":\"${user_id}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}" >/dev/null
+stream_payload="$(json_post "${base_url}/api/v1/admin/output-streams" "{\"name\":\"${stream_name}\",\"public_name\":\"${stream_name}\",\"title\":\"${stream_name}\",\"playback_path\":\"${stream_name}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+stream_id="$(echo "${stream_payload}" | jq -r '.output_stream_id')"
+playback_name="$(echo "${stream_payload}" | jq -r '.playback_path')"
+json_post "${base_url}/api/v1/admin/output-streams/${stream_id}/grant-user" "{\"user_id\":\"${user_id}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}" >/dev/null
 
-ingest_payload="$(json_post "${base_url}/api/v1/admin/ingest-sessions" "{\"output_stream_id\":\"${stream_id}\",\"publisher_label\":\"verification-publisher\",\"ingest_key\":\"${playback_name}\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
+ingest_payload="$(json_post "${base_url}/api/v1/admin/ingest-sessions" "{\"current_output_stream_id\":\"${stream_id}\",\"source_label\":\"verification-publisher\"}" -H "X-Admin-Secret: ${ADMIN_SECRET}")"
 ingest_session_id="$(echo "${ingest_payload}" | jq -r '.ingest_session_id')"
 ingest_key="$(echo "${ingest_payload}" | jq -r '.ingest_key')"
-playback_token="$(json_post "${base_url}/api/v1/playback-token" "{\"user_id\":\"${user_id}\",\"stream_id\":\"${stream_id}\"}" | jq -r '.token')"
+
+if [[ "${playback_name}" != "${ingest_key}" ]]; then
+  playback_path_is_distinct_from_ingest_key=true
+fi
+
+public_streams_payload="$(curl_api "${base_url}/api/v1/streams?user_id=${user_id}")"
+viewer_session_payload="$(json_post "${base_url}/api/v1/viewer/session" "{\"client_code\":\"${user_client_code}\"}")"
+viewer_token="$(echo "${viewer_session_payload}" | jq -r '.viewer_token // empty')"
+viewer_streams_payload="$(curl_api "${base_url}/api/v1/viewer/streams" -H "Authorization: Bearer ${viewer_token}")"
+if echo "${public_streams_payload}" | jq -e --arg stream_id "${stream_id}" --arg playback_path "${playback_name}" '
+  (.output_streams | length) == 1
+  and .output_streams[0].output_stream_id == $stream_id
+  and .output_streams[0].playback_path == $playback_path
+  and (. | tostring | contains("ingest_key") | not)
+  and (. | tostring | contains("source_ingest_session_id") | not)
+' >/dev/null \
+  && echo "${viewer_streams_payload}" | jq -e --arg stream_id "${stream_id}" --arg playback_path "${playback_name}" '
+  (.streams | length) == 1
+  and .streams[0].output_stream_id == $stream_id
+  and .streams[0].playback_path == $playback_path
+  and (. | tostring | contains("ingest_key") | not)
+  and (. | tostring | contains("source_ingest_session_id") | not)
+' >/dev/null; then
+  viewer_api_hides_ingest_key=true
+fi
+
+playback_token_payload="$(json_post "${base_url}/api/v1/playback-token" "{\"user_id\":\"${user_id}\",\"output_stream_id\":\"${stream_id}\"}")"
+playback_token="$(echo "${playback_token_payload}" | jq -r '.token')"
+playback_url="$(echo "${playback_token_payload}" | jq -r '.playback_url')"
+json_post "${base_url}/api/v1/playback-token" "{\"user_id\":\"${user_id}\",\"playback_path\":\"${playback_name}\"}" >/dev/null
+
+if [[ "${playback_url}" == *"/live/${playback_name}/whep?token="* && "${playback_url}" != *"${ingest_key}"* ]]; then
+  whep_url_uses_playback_path=true
+fi
+
+reject_body_file="${tmp_dir}/playback-token-reject.json"
+reject_code="$(curl -s -o "${reject_body_file}" -w '%{http_code}' "${curl_base_opts[@]}" -X POST "${base_url}/api/v1/playback-token" -H 'content-type: application/json' -d "{\"user_id\":\"${user_id}\",\"playback_path\":\"${ingest_key}\"}")"
+if [[ "${reject_code}" == "400" ]] && jq -e '.error.code == "ingest_key_not_playback_identifier"' "${reject_body_file}" >/dev/null; then
+  playback_token_rejects_ingest_key=true
+fi
 
 if curl_api "${base_url}/" >/dev/null 2>&1; then
   nginx_ok=true
@@ -191,7 +246,13 @@ if poll_ingest_status "live" && kill -0 "${ffmpeg_pid}" >/dev/null 2>&1; then
 fi
 
 if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  if ! ffprobe -v error -rw_timeout 5000000 -show_entries stream=codec_type -of default=noprint_wrappers=1 "rtmp://127.0.0.1:${RTMP_PORT}/live/${ingest_key}" >/dev/null 2>&1; then
+    rtmp_read_blocked_on_ingest_path=true
+  fi
   if ! ffprobe -v error -rw_timeout 5000000 -show_entries stream=codec_type -of default=noprint_wrappers=1 "rtmp://127.0.0.1:${RTMP_PORT}/live/${playback_name}" >/dev/null 2>&1; then
+    rtmp_read_blocked_on_output_path=true
+  fi
+  if [[ "${rtmp_read_blocked_on_ingest_path}" == "true" && "${rtmp_read_blocked_on_output_path}" == "true" ]]; then
     rtmp_playback_blocked=true
   fi
 else
@@ -212,7 +273,7 @@ fi
 
 stop_publisher
 compose exec -T backend curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:8000/internal/media/publish-stop?secret=${INTERNAL_API_SECRET}" -H 'content-type: application/json' -d "{\"path\":\"live/${ingest_key}\"}" | grep -q '^200$' || true
-poll_ingest_status "offline" || true
+poll_ingest_status "ended" || true
 
 if [[ "${rtmp_ingest_ok}" != "true" && -s "${ffmpeg_log}" ]]; then
   media_notes="${media_notes}; ffmpeg_publish_log=$(tr '\n' ' ' < "${ffmpeg_log}" | cut -c1-240)"
@@ -221,9 +282,15 @@ fi
 write_state
 
 [[ "${nginx_ok}" == "true" ]] || fail "nginx did not answer during media verification"
+[[ "${viewer_api_hides_ingest_key}" == "true" ]] || fail "viewer-facing API leaked ingest linkage or omitted output_stream playback mapping"
+[[ "${playback_token_rejects_ingest_key}" == "true" ]] || fail "playback token endpoint accepted ingest key semantics"
+[[ "${playback_path_is_distinct_from_ingest_key}" == "true" ]] || fail "playback_path must stay distinct from ingest_key"
+[[ "${whep_url_uses_playback_path}" == "true" ]] || fail "WHEP playback URL did not use output_stream.playback_path"
 [[ "${playback_auth_ok}" == "true" ]] || fail "playback auth path verification failed"
 [[ "${rtmp_ingest_ok}" == "true" ]] || fail "synthetic RTMP ingest did not become live"
 if [[ "${VERIFY_RTMP_PLAYBACK_BLOCK:-true}" == "true" ]]; then
+  [[ "${rtmp_read_blocked_on_ingest_path}" == "true" ]] || fail "RTMP read was not blocked on ingest path"
+  [[ "${rtmp_read_blocked_on_output_path}" == "true" ]] || fail "RTMP read was not blocked on output path"
   [[ "${rtmp_playback_blocked}" == "true" ]] || fail "direct RTMP playback was not blocked"
 fi
 if [[ "${VERIFY_BROWSERLESS_WHEP:-true}" == "true" ]]; then

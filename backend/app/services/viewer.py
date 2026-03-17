@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from ..config import get_settings
 from ..errors import forbidden, not_found
 from ..models import User
-from .streams import list_streams_for_user
+from .streams import build_viewer_output_stream_payload, list_output_streams_for_user
 
 
 def get_user_by_client_code(db: Session, client_code: str) -> User | None:
@@ -22,15 +22,7 @@ def list_user_stream_payloads(db: Session, user_id: str) -> list[dict]:
     user = get_user(db, user_id)
     if user.status != "approved":
         raise forbidden("user_not_approved", "user is not approved")
-    return [
-        {
-            "stream_id": stream.id,
-            "name": stream.name,
-            "playback_name": stream.playback_name,
-            "is_active": stream.is_active,
-        }
-        for stream in list_streams_for_user(db, user_id)
-    ]
+    return [build_viewer_output_stream_payload(stream) for stream in list_output_streams_for_user(db, user_id)]
 
 
 def viewer_config() -> dict:

@@ -37,6 +37,12 @@ if [[ "${1:-}" == "--skipped" ]]; then
       nginx_ok: false,
       rtmp_ingest_ok: false,
       rtmp_playback_blocked: false,
+      viewer_api_hides_ingest_key: false,
+      playback_token_rejects_ingest_key: false,
+      rtmp_read_blocked_on_ingest_path: false,
+      rtmp_read_blocked_on_output_path: false,
+      playback_path_is_distinct_from_ingest_key: false,
+      whep_url_uses_playback_path: false,
       whep_or_webrtc_endpoint_ok: false,
       turn_reachable: false,
       playback_auth_ok: false,
@@ -84,6 +90,12 @@ jq -n \
   --arg nginx_ok "${SMOKE_NGINX_OK}" \
   --arg rtmp_ingest_ok "${SMOKE_RTMP_INGEST_OK}" \
   --arg rtmp_playback_blocked "${SMOKE_RTMP_PLAYBACK_BLOCKED}" \
+  --arg viewer_api_hides_ingest_key "${SMOKE_VIEWER_API_HIDES_INGEST_KEY}" \
+  --arg playback_token_rejects_ingest_key "${SMOKE_PLAYBACK_TOKEN_REJECTS_INGEST_KEY}" \
+  --arg rtmp_read_blocked_on_ingest_path "${SMOKE_RTMP_READ_BLOCKED_ON_INGEST_PATH}" \
+  --arg rtmp_read_blocked_on_output_path "${SMOKE_RTMP_READ_BLOCKED_ON_OUTPUT_PATH}" \
+  --arg playback_path_is_distinct_from_ingest_key "${SMOKE_PLAYBACK_PATH_IS_DISTINCT_FROM_INGEST_KEY}" \
+  --arg whep_url_uses_playback_path "${SMOKE_WHEP_URL_USES_PLAYBACK_PATH}" \
   --arg whep_or_webrtc_endpoint_ok "${SMOKE_WHEP_ENDPOINT_OK}" \
   --arg turn_reachable "${SMOKE_TURN_REACHABLE}" \
   --arg playback_auth_ok "${SMOKE_PLAYBACK_AUTH_OK}" \
@@ -104,6 +116,12 @@ jq -n \
     nginx_ok: ($nginx_ok == "true"),
     rtmp_ingest_ok: ($rtmp_ingest_ok == "true"),
     rtmp_playback_blocked: ($rtmp_playback_blocked == "true"),
+    viewer_api_hides_ingest_key: ($viewer_api_hides_ingest_key == "true"),
+    playback_token_rejects_ingest_key: ($playback_token_rejects_ingest_key == "true"),
+    rtmp_read_blocked_on_ingest_path: ($rtmp_read_blocked_on_ingest_path == "true"),
+    rtmp_read_blocked_on_output_path: ($rtmp_read_blocked_on_output_path == "true"),
+    playback_path_is_distinct_from_ingest_key: ($playback_path_is_distinct_from_ingest_key == "true"),
+    whep_url_uses_playback_path: ($whep_url_uses_playback_path == "true"),
     whep_or_webrtc_endpoint_ok: ($whep_or_webrtc_endpoint_ok == "true"),
     turn_reachable: ($turn_reachable == "true"),
     playback_auth_ok: ($playback_auth_ok == "true"),
@@ -133,6 +151,12 @@ Backend ready: ${VERIFY_BACKEND_READY}
 nginx OK: ${SMOKE_NGINX_OK}
 RTMP ingest accepted: ${SMOKE_RTMP_INGEST_OK}
 RTMP playback blocked: ${SMOKE_RTMP_PLAYBACK_BLOCKED}
+Viewer API hides ingest key: ${SMOKE_VIEWER_API_HIDES_INGEST_KEY}
+Playback token rejects ingest key: ${SMOKE_PLAYBACK_TOKEN_REJECTS_INGEST_KEY}
+RTMP read blocked on ingest path: ${SMOKE_RTMP_READ_BLOCKED_ON_INGEST_PATH}
+RTMP read blocked on output path: ${SMOKE_RTMP_READ_BLOCKED_ON_OUTPUT_PATH}
+Playback path distinct from ingest key: ${SMOKE_PLAYBACK_PATH_IS_DISTINCT_FROM_INGEST_KEY}
+WHEP URL uses playback path: ${SMOKE_WHEP_URL_USES_PLAYBACK_PATH}
 WHEP/WebRTC endpoint OK: ${SMOKE_WHEP_ENDPOINT_OK}
 TURN reachable: ${SMOKE_TURN_REACHABLE}
 Playback auth OK: ${SMOKE_PLAYBACK_AUTH_OK}
@@ -145,6 +169,12 @@ Overall status: ${VERIFY_OVERALL_STATUS}
 Media semantics:
 - ingest accepted: ${SMOKE_RTMP_INGEST_OK}
 - stream republished to WebRTC/WHEP: ${SMOKE_WHEP_ENDPOINT_OK}
+- viewer API hides ingest key: ${SMOKE_VIEWER_API_HIDES_INGEST_KEY}
+- playback token rejects ingest key semantics: ${SMOKE_PLAYBACK_TOKEN_REJECTS_INGEST_KEY}
+- RTMP read denied on ingest path: ${SMOKE_RTMP_READ_BLOCKED_ON_INGEST_PATH}
+- RTMP read denied on output path: ${SMOKE_RTMP_READ_BLOCKED_ON_OUTPUT_PATH}
+- playback path distinct from ingest key: ${SMOKE_PLAYBACK_PATH_IS_DISTINCT_FROM_INGEST_KEY}
+- WHEP URL built from playback_path: ${SMOKE_WHEP_URL_USES_PLAYBACK_PATH}
 - playback transport encrypted: ${SMOKE_MEDIA_ENCRYPTION_OK}
 - transcoding enabled: ${SMOKE_TRANSCODING_ENABLED}
 - transcoding verified: ${SMOKE_TRANSCODING_VERIFIED}
