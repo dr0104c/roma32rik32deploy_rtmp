@@ -192,7 +192,7 @@ class MediaEventRequest(BaseModel):
 
 
 class ViewerSessionRequest(BaseModel):
-    client_code: str = Field(min_length=9, max_length=9)
+    client_code: str = Field(min_length=3, max_length=9)
 
 
 class ViewerSessionResponse(BaseModel):

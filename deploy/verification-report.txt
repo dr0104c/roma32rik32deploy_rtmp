@@ -1,0 +1,47 @@
+Stream Platform Verification Report
+Timestamp: 2026-03-17T11:25:57Z
+Host/Domain: 192.168.103.54
+Domain: 
+TLS enabled: false
+Containers OK: true
+Backend ready: true
+nginx OK: true
+RTMP ingest accepted: true
+RTMP playback blocked: true
+Viewer API hides ingest key: true
+Playback token rejects ingest key: true
+RTMP read blocked on ingest path: true
+RTMP read blocked on output path: true
+Playback path distinct from ingest key: true
+WHEP URL uses playback path: true
+WHEP/WebRTC endpoint OK: true
+TURN reachable: true
+Playback auth OK: true
+Protected playback channel OK: false
+Transcoding enabled: false
+Transcoding verified: false
+Browser-level rendering verified: false
+Overall status: passed
+
+Media semantics:
+- ingest accepted: true
+- stream republished to WebRTC/WHEP: true
+- viewer API hides ingest key: true
+- playback token rejects ingest key semantics: true
+- RTMP read denied on ingest path: true
+- RTMP read denied on output path: true
+- playback path distinct from ingest key: true
+- WHEP URL built from playback_path: true
+- playback transport encrypted: false
+- transcoding enabled: false
+- transcoding verified: false
+- browser rendering verified: false
+
+Notes:
+- server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately
+- RTMP ingest is plain RTMP and not encrypted unless RTMPS is added later.
+- Direct RTMP playback is intentionally blocked.
+- If TLS is disabled, playback auth can still work while encrypted playback remains false.
+
+Failed checks:
+- none

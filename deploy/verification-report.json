@@ -1,0 +1,33 @@
+{
+  "timestamp": "2026-03-17T11:25:57Z",
+  "host": "192.168.103.54",
+  "domain": "",
+  "tls_enabled": false,
+  "containers_ok": true,
+  "backend_ready": true,
+  "nginx_ok": true,
+  "rtmp_ingest_ok": true,
+  "rtmp_playback_blocked": true,
+  "viewer_api_hides_ingest_key": true,
+  "playback_token_rejects_ingest_key": true,
+  "rtmp_read_blocked_on_ingest_path": true,
+  "rtmp_read_blocked_on_output_path": true,
+  "playback_path_is_distinct_from_ingest_key": true,
+  "whep_url_uses_playback_path": true,
+  "whep_or_webrtc_endpoint_ok": true,
+  "turn_reachable": true,
+  "playback_auth_ok": true,
+  "media_encryption_ok": false,
+  "transcoding_enabled": false,
+  "transcoding_verified": false,
+  "browser_level_rendering_verified": false,
+  "overall_status": "passed",
+  "failed_checks": [],
+  "notes": {
+    "playback_transport": "WebRTC/WHEP",
+    "ingest_transport": "RTMP",
+    "browser_rendering_verified": false,
+    "transcoding": "absent / not configured",
+    "media_verification_scope": "server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately"
+  }
+}

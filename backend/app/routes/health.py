@@ -59,7 +59,7 @@ def metrics(db: Session = Depends(get_db)):
                 db.scalars(
                     select(AuditLog).where(
                         AuditLog.actor_type == "media",
-                        AuditLog.action.in_(["publish_denied", "media_auth_denied", "rtmp_playback_denied"]),
+                        AuditLog.action.in_(["publish_denied", "media_auth_denied", "rtmp_playback_denied", "ingest_denied"]),
                     )
                 ).all()
             )

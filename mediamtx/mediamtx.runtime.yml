@@ -1,0 +1,35 @@
+logLevel: info
+
+api: yes
+apiAddress: :9997
+
+rtmp: yes
+rtmpAddress: :1935
+
+hls: no
+rtsp: yes
+srt: no
+
+webrtc: yes
+webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts:
+  - 192.168.103.54
+webrtcICEServers2:
+  - url: stun:192.168.103.54:3478
+  - url: turn:192.168.103.54:3478?transport=udp
+    username: any
+    password: K6Q0NojOYQNx1z8uISV4MEwmbD067ope
+  - url: turn:192.168.103.54:3478?transport=tcp
+    username: any
+    password: K6Q0NojOYQNx1z8uISV4MEwmbD067ope
+
+authMethod: http
+authHTTPAddress: http://backend:8000/internal/mediamtx/auth?secret=04id1YEtUTCuokwMVDWMCpuqDfty2EaF
+
+pathDefaults:
+  source: publisher
+
+paths:
+  "~^live/.+$":

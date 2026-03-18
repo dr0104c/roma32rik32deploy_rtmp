@@ -5,20 +5,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..auth import generate_ingest_key
-from ..errors import bad_request, conflict, not_found
+from ..errors import conflict, not_found
 from ..models import IngestSession, OutputStream
-from .audit import write_audit_log
-
-
-VALID_INGEST_TRANSITIONS = {
-    "created": {"connecting", "live", "revoked", "error", "offline"},
-    "connecting": {"live", "offline", "revoked", "error"},
-    "live": {"offline", "revoked", "error"},
-    "offline": {"connecting", "live", "revoked", "error"},
-    "error": {"connecting", "live", "offline", "revoked"},
-    "revoked": set(),
-}
+from .audit import write_audit_log, write_ingest_event
+from .mediamtx import delete_playback_alias, sync_playback_alias
+from .transcoding import start_transcoder, stop_transcoder
 
 
 def utcnow() -> datetime:
@@ -32,23 +25,40 @@ def generate_unique_ingest_key(db: Session) -> str:
     return ingest_key
 
 
+def serialize_ingest_session(session: IngestSession, *, include_secret: bool = True) -> dict:
+    return {
+        "ingest_session_id": session.id,
+        "source_label": session.source_label,
+        "status": session.status,
+        "created_at": session.created_at,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "revoked_at": session.revoked_at,
+        "last_seen_at": session.last_seen_at,
+        "current_output_stream_id": session.current_output_stream_id,
+        "metadata_json": session.metadata_json or {},
+        "ingest_key": session.ingest_key if include_secret else None,
+    }
+
+
 def create_ingest_session(
     db: Session,
     *,
-    output_stream_id: str,
-    publisher_label: str | None = None,
+    current_output_stream_id: str | None = None,
+    source_label: str | None = None,
     ingest_key: str | None = None,
+    metadata_json: dict | None = None,
 ) -> IngestSession:
-    stream = db.get(OutputStream, output_stream_id)
-    if stream is None:
-        raise not_found("stream_not_found", "stream not found")
+    if current_output_stream_id is not None and db.get(OutputStream, current_output_stream_id) is None:
+        raise not_found("output_stream_not_found", "output stream not found")
     if ingest_key is not None and db.scalar(select(IngestSession).where(IngestSession.ingest_key == ingest_key)) is not None:
         raise conflict("ingest_key_exists", "ingest key already exists")
     session = IngestSession(
-        output_stream_id=stream.id,
         ingest_key=ingest_key or generate_unique_ingest_key(db),
+        source_label=source_label,
         status="created",
-        publisher_label=publisher_label,
+        current_output_stream_id=current_output_stream_id,
+        metadata_json=metadata_json or {},
     )
     db.add(session)
     db.flush()
@@ -59,17 +69,30 @@ def create_ingest_session(
         action="ingest_session_created",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": output_stream_id, "publisher_label": publisher_label, "ingest_key_override": ingest_key is not None},
+        metadata={"current_output_stream_id": current_output_stream_id, "source_label": source_label},
     )
+    write_ingest_event(db, ingest_session_id=session.id, event_type="created", payload={"current_output_stream_id": current_output_stream_id})
     db.commit()
     db.refresh(session)
     return session
 
 
-def list_ingest_sessions(db: Session, *, output_stream_id: str | None = None) -> list[IngestSession]:
+def get_ingest_session(db: Session, ingest_session_id: str) -> IngestSession:
+    session = db.get(IngestSession, ingest_session_id)
+    if session is None:
+        raise not_found("ingest_session_not_found", "ingest session not found")
+    return session
+
+
+def list_ingest_sessions(db: Session, *, current_output_stream_id: str | None = None) -> list[IngestSession]:
     query = select(IngestSession).order_by(IngestSession.created_at.desc())
-    if output_stream_id:
-        query = query.where(IngestSession.output_stream_id == output_stream_id)
+    if current_output_stream_id:
+        query = query.where(IngestSession.current_output_stream_id == current_output_stream_id)
+    return list(db.scalars(query).all())
+
+
+def list_live_ingest_sessions(db: Session) -> list[IngestSession]:
+    query = select(IngestSession).where(IngestSession.status == "live").order_by(IngestSession.created_at.desc())
     return list(db.scalars(query).all())
 
 
@@ -77,46 +100,34 @@ def get_ingest_session_by_key(db: Session, ingest_key: str) -> IngestSession | N
     return db.scalar(select(IngestSession).where(IngestSession.ingest_key == ingest_key).order_by(IngestSession.created_at.desc()))
 
 
-def require_valid_transition(current_status: str, next_status: str) -> None:
-    if next_status not in VALID_INGEST_TRANSITIONS.get(current_status, set()):
-        raise bad_request("ingest_transition_invalid", f"cannot transition ingest session from {current_status} to {next_status}")
-
-
-def transition_ingest_session(
-    db: Session,
-    *,
-    session: IngestSession,
-    next_status: str,
-    publisher_label: str | None = None,
-    error_message: str | None = None,
-) -> IngestSession:
-    if session.status != next_status:
-        require_valid_transition(session.status, next_status)
-    now = utcnow()
-    if publisher_label is not None:
-        session.publisher_label = publisher_label
-    if next_status in {"connecting", "live"}:
-        session.last_seen_at = now
-    if next_status == "live" and session.last_publish_started_at is None:
-        session.last_publish_started_at = now
-    if next_status in {"offline", "revoked"}:
-        session.last_publish_stopped_at = now
-    if next_status == "error":
-        session.last_error = error_message or "unknown error"
-    session.status = next_status
-    db.flush()
+def bind_ingest_session_to_output_stream(db: Session, *, ingest_session_id: str, output_stream_id: str | None) -> IngestSession:
+    session = get_ingest_session(db, ingest_session_id)
+    if output_stream_id is not None and db.get(OutputStream, output_stream_id) is None:
+        raise not_found("output_stream_not_found", "output stream not found")
+    session.current_output_stream_id = output_stream_id
+    write_audit_log(
+        db,
+        actor_type="admin",
+        actor_id="bootstrap-admin",
+        action="ingest_session_bound",
+        target_type="ingest_session",
+        target_id=session.id,
+        metadata={"current_output_stream_id": output_stream_id},
+    )
+    db.commit()
+    db.refresh(session)
     return session
 
 
 def rotate_ingest_key(db: Session, ingest_session_id: str) -> IngestSession:
-    session = db.get(IngestSession, ingest_session_id)
-    if session is None:
-        raise not_found("ingest_session_not_found", "ingest session not found")
+    session = get_ingest_session(db, ingest_session_id)
     if session.status == "revoked":
         raise conflict("ingest_session_revoked", "ingest session is revoked")
     session.ingest_key = generate_unique_ingest_key(db)
     session.status = "created"
-    session.last_error = None
+    session.started_at = None
+    session.ended_at = None
+    session.last_seen_at = None
     write_audit_log(
         db,
         actor_type="admin",
@@ -124,19 +135,19 @@ def rotate_ingest_key(db: Session, ingest_session_id: str) -> IngestSession:
         action="ingest_key_rotated",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": session.output_stream_id},
+        metadata={"current_output_stream_id": session.current_output_stream_id},
     )
+    write_ingest_event(db, ingest_session_id=session.id, event_type="key_rotated")
     db.commit()
     db.refresh(session)
     return session
 
 
 def revoke_ingest_session(db: Session, ingest_session_id: str) -> IngestSession:
-    session = db.get(IngestSession, ingest_session_id)
-    if session is None:
-        raise not_found("ingest_session_not_found", "ingest session not found")
-    if session.status != "revoked":
-        transition_ingest_session(db, session=session, next_status="revoked")
+    session = get_ingest_session(db, ingest_session_id)
+    session.status = "revoked"
+    session.revoked_at = utcnow()
+    session.ended_at = session.ended_at or session.revoked_at
     write_audit_log(
         db,
         actor_type="admin",
@@ -144,107 +155,139 @@ def revoke_ingest_session(db: Session, ingest_session_id: str) -> IngestSession:
         action="ingest_session_revoked",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": session.output_stream_id},
+        metadata={"current_output_stream_id": session.current_output_stream_id},
     )
+    write_ingest_event(db, ingest_session_id=session.id, event_type="revoked")
     db.commit()
     db.refresh(session)
     return session
 
 
-def resolve_publish_target(
-    db: Session,
-    *,
-    ingest_key: str,
-    ingest_auth_mode: str,
-) -> tuple[OutputStream | None, IngestSession | None]:
-    if ingest_auth_mode == "keyed":
-        session = get_ingest_session_by_key(db, ingest_key)
-        if session is None or session.status == "revoked":
-            return None, session
-        stream = db.get(OutputStream, session.output_stream_id) if session.output_stream_id else None
-        return stream, session
+def resolve_output_stream_for_ingest(db: Session, *, session: IngestSession) -> OutputStream:
+    if session.current_output_stream_id:
+        output_stream = db.get(OutputStream, session.current_output_stream_id)
+        if output_stream is not None:
+            return output_stream
 
-    stream = db.scalar(select(OutputStream).where(OutputStream.ingest_key == ingest_key, OutputStream.is_active.is_(True)))
-    if stream is not None:
-        return stream, None
+    output_stream = db.scalar(select(OutputStream).where(OutputStream.source_ingest_session_id == session.id).order_by(OutputStream.created_at.asc()))
+    if output_stream is not None:
+        session.current_output_stream_id = output_stream.id
+        return output_stream
+
+    auto_name = session.source_label or f"ingest-{session.id[:8]}"
+    playback_path = f"out-{session.id[:12]}"
+    output_stream = OutputStream(
+        name=auto_name,
+        public_name=playback_path,
+        title=auto_name,
+        description="Auto-created from ingest session",
+        visibility="private",
+        playback_path=playback_path,
+        source_ingest_session_id=session.id,
+        metadata_json={"auto_created_from_ingest": True},
+        is_active=True,
+    )
+    db.add(output_stream)
+    db.flush()
+    session.current_output_stream_id = output_stream.id
+    write_audit_log(
+        db,
+        actor_type="media",
+        action="output_stream_auto_created",
+        target_type="output_stream",
+        target_id=output_stream.id,
+        metadata={"ingest_session_id": session.id, "playback_path": output_stream.playback_path},
+    )
+    return output_stream
+
+
+def mark_ingest_started(db: Session, *, ingest_key: str, source_label: str | None = None) -> tuple[IngestSession, OutputStream]:
     session = get_ingest_session_by_key(db, ingest_key)
-    if session is None or session.status == "revoked":
-        return None, session
-    stream = db.get(OutputStream, session.output_stream_id) if session.output_stream_id else None
-    return stream, session
-
-
-def handle_publish_start(
-    db: Session,
-    *,
-    ingest_key: str,
-    publisher_label: str | None = None,
-) -> tuple[OutputStream | None, IngestSession | None]:
-    from ..config import get_settings
-
-    stream, session = resolve_publish_target(db, ingest_key=ingest_key, ingest_auth_mode=get_settings().ingest_auth_mode)
-    if stream is None:
-        return None, session
     if session is None:
-        session = db.scalar(
-            select(IngestSession)
-            .where(IngestSession.output_stream_id == stream.id, IngestSession.ingest_key == ingest_key)
-            .order_by(IngestSession.created_at.desc())
-        )
-        if session is None:
-            session = IngestSession(
-                output_stream_id=stream.id,
-                ingest_key=ingest_key,
-                status="created",
-                publisher_label=publisher_label,
-            )
-            db.add(session)
-            db.flush()
-
-    if session.status == "live":
-        session.last_seen_at = utcnow()
-    else:
-        if session.status == "created":
-            transition_ingest_session(db, session=session, next_status="connecting", publisher_label=publisher_label)
-        transition_ingest_session(db, session=session, next_status="live", publisher_label=publisher_label)
+        raise not_found("ingest_session_not_found", "ingest session not found")
+    if session.status == "revoked":
+        raise conflict("ingest_session_revoked", "ingest session is revoked")
+    now = utcnow()
+    session.source_label = source_label or session.source_label
+    session.status = "live"
+    session.started_at = session.started_at or now
+    session.ended_at = None
+    session.last_seen_at = now
+    output_stream = resolve_output_stream_for_ingest(db, session=session)
+    output_stream.source_ingest_session_id = session.id
+    output_stream.is_active = output_stream.visibility != "disabled"
     write_audit_log(
         db,
         actor_type="media",
         action="ingest_started",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": stream.id, "publisher_label": publisher_label},
+        metadata={"output_stream_id": output_stream.id, "playback_path": output_stream.playback_path},
+    )
+    write_ingest_event(
+        db,
+        ingest_session_id=session.id,
+        event_type="started",
+        payload={"output_stream_id": output_stream.id, "playback_path": output_stream.playback_path},
     )
     db.commit()
     db.refresh(session)
-    return stream, session
+    db.refresh(output_stream)
+    return session, output_stream
 
 
-def handle_publish_stop(db: Session, *, ingest_key: str) -> IngestSession | None:
+def mark_ingest_stopped(db: Session, *, ingest_key: str) -> IngestSession | None:
     session = get_ingest_session_by_key(db, ingest_key)
     if session is None:
         return None
-    if session.status == "offline":
-        session.last_publish_stopped_at = session.last_publish_stopped_at or utcnow()
-    elif session.status != "revoked":
-        transition_ingest_session(db, session=session, next_status="offline")
+    if session.status != "revoked":
+        session.status = "ended"
+    session.ended_at = utcnow()
     write_audit_log(
         db,
         actor_type="media",
         action="ingest_stopped",
         target_type="ingest_session",
         target_id=session.id,
-        metadata={"output_stream_id": session.output_stream_id},
+        metadata={"current_output_stream_id": session.current_output_stream_id},
+    )
+    write_ingest_event(
+        db,
+        ingest_session_id=session.id,
+        event_type="stopped",
+        payload={"current_output_stream_id": session.current_output_stream_id},
     )
     db.commit()
     db.refresh(session)
     return session
 
 
-def get_latest_ingest_event_time(db: Session) -> datetime | None:
-    session = db.scalar(select(IngestSession).order_by(IngestSession.updated_at.desc()))
-    return session.updated_at if session else None
+def handle_publish_start(db: Session, *, ingest_key: str, publisher_label: str | None = None) -> tuple[OutputStream | None, IngestSession | None]:
+    session, output_stream = mark_ingest_started(db, ingest_key=ingest_key, source_label=publisher_label)
+    if output_stream is not None:
+        if get_settings().enable_ffmpeg_transcode:
+            start_transcoder(playback_path=output_stream.playback_path, ingest_key=ingest_key)
+        sync_playback_alias(playback_path=output_stream.playback_path, ingest_key=ingest_key)
+    return output_stream, session
 
 
-def count_live_ingest_sessions(db: Session) -> int:
-    return len(list(db.scalars(select(IngestSession).where(IngestSession.status == "live")).all()))
+def handle_publish_stop(db: Session, *, ingest_key: str) -> IngestSession | None:
+    session = get_ingest_session_by_key(db, ingest_key)
+    playback_path = None
+    if session is not None:
+        output_stream = resolve_output_stream_for_ingest(db, session=session)
+        playback_path = output_stream.playback_path
+
+    stopped = mark_ingest_stopped(db, ingest_key=ingest_key)
+    stop_transcoder(playback_path)
+    delete_playback_alias(playback_path)
+    return stopped
+
+
+def reconcile_live_ingests(db: Session) -> None:
+    settings = get_settings()
+    for session in list_live_ingest_sessions(db):
+        output_stream = resolve_output_stream_for_ingest(db, session=session)
+        if settings.enable_ffmpeg_transcode:
+            start_transcoder(playback_path=output_stream.playback_path, ingest_key=session.ingest_key)
+        sync_playback_alias(playback_path=output_stream.playback_path, ingest_key=session.ingest_key)

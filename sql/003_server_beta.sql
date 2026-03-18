@@ -68,9 +68,18 @@ ALTER TABLE ingest_sessions
     ADD COLUMN IF NOT EXISTS last_error TEXT NULL;
 
 ALTER TABLE ingest_sessions DROP CONSTRAINT IF EXISTS ingest_sessions_status_check;
-ALTER TABLE ingest_sessions
-    ADD CONSTRAINT ingest_sessions_status_check
-    CHECK (status IN ('created','connecting','live','offline','revoked','error'));
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM ingest_sessions
+        WHERE status NOT IN ('created','connecting','live','offline','revoked','error')
+    ) THEN
+        ALTER TABLE ingest_sessions
+            ADD CONSTRAINT ingest_sessions_status_check
+            CHECK (status IN ('created','connecting','live','offline','revoked','error'));
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS stream_permissions_user (
     id VARCHAR(36) PRIMARY KEY,

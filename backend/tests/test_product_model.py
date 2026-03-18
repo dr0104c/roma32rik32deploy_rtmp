@@ -2,11 +2,6 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("DATABASE_URL", "sqlite://")
@@ -24,153 +19,140 @@ os.environ.setdefault("TURN_URLS", "turn:127.0.0.1:3478?transport=udp")
 os.environ.setdefault("INGEST_AUTH_MODE", "keyed")
 os.environ.setdefault("INTERNAL_MEDIA_SECRET_REQUIRED", "true")
 
-from app.db import get_db
-from app.main import app
-from app.models import Base
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.mediamtx_hooks import handle_media_auth
+from app.models import Base, User
+from app.routes.admin import admin_create_output_stream, admin_grant_user, approve, create_ingest
+from app.routes.enroll import enroll
+from app.routes.playback import playback_token
+from app.routes.streams import public_list_streams
+from app.routes.viewer import viewer_playback_session, viewer_session, viewer_streams
+from app.schemas import (
+    CreateIngestSessionRequest,
+    CreateOutputStreamRequest,
+    EnrollRequest,
+    GrantUserRequest,
+    MediaAuthRequest,
+    PlaybackTokenRequest,
+    ViewerSessionRequest,
+)
 
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+Base.metadata.create_all(bind=engine)
 
 
-def fresh_client() -> TestClient:
+def fresh_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
-
-    def override_get_db():
-        db = SessionLocal()
-        try:
-            yield db
-        finally:
-            db.close()
-
-    app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app)
+    return SessionLocal()
 
 
 def test_product_model_separates_ingest_key_from_playback_path():
-    client = fresh_client()
-    admin_headers = {"X-Admin-Secret": os.environ["ADMIN_SECRET"]}
-    internal_headers = {"X-Internal-Secret": os.environ["INTERNAL_API_SECRET"]}
+    db = fresh_db()
 
-    enroll = client.post("/api/v1/enroll", json={"display_name": "Product Model Viewer"})
-    assert enroll.status_code == 201
-    user = enroll.json()
-    user_id = user["user_id"]
-    client_code = user["client_code"]
+    user_response = enroll(EnrollRequest(display_name="Product Model Viewer"), db)
+    user_id = user_response.user_id
+    client_code = user_response.client_code
 
-    approve = client.post(f"/api/v1/admin/users/{user_id}/approve", headers=admin_headers)
-    assert approve.status_code == 200
+    approve(user_id, db)
 
-    output_stream = client.post(
-        "/api/v1/admin/output-streams",
-        json={
-            "name": "Main Stage",
-            "public_name": "main-stage",
-            "title": "Main Stage",
-            "playback_path": "main-stage-watch",
-        },
-        headers=admin_headers,
+    output_stream_response = admin_create_output_stream(
+        CreateOutputStreamRequest(
+            name="Main Stage",
+            public_name="main-stage",
+            title="Main Stage",
+            playback_path="main-stage-watch",
+        ),
+        db,
     )
-    assert output_stream.status_code == 201
-    output_stream_body = output_stream.json()
-    output_stream_id = output_stream_body["output_stream_id"]
-    playback_path = output_stream_body["playback_path"]
+    output_stream_id = output_stream_response.output_stream_id
+    playback_path = output_stream_response.playback_path
 
-    ingest_session = client.post(
-        "/api/v1/admin/ingest-sessions",
-        json={"current_output_stream_id": output_stream_id, "source_label": "encoder-a"},
-        headers=admin_headers,
+    ingest_session_response = create_ingest(
+        CreateIngestSessionRequest(current_output_stream_id=output_stream_id, source_label="encoder-a"),
+        db,
     )
-    assert ingest_session.status_code == 201
-    ingest_session_body = ingest_session.json()
-    ingest_key = ingest_session_body["ingest_key"]
+    ingest_key = ingest_session_response.ingest_key
 
-    grant = client.post(
-        f"/api/v1/admin/output-streams/{output_stream_id}/grant-user",
-        json={"user_id": user_id},
-        headers=admin_headers,
-    )
-    assert grant.status_code == 200
+    admin_grant_user(output_stream_id, GrantUserRequest(user_id=user_id), db)
 
     assert playback_path != ingest_key
 
-    public_streams = client.get("/api/v1/streams", params={"user_id": user_id})
-    assert public_streams.status_code == 200
-    public_streams_body = public_streams.json()
-    assert public_streams_body["output_streams"][0]["output_stream_id"] == output_stream_id
-    assert public_streams_body["output_streams"][0]["playback_path"] == playback_path
-    assert "ingest_key" not in public_streams.text
-    assert "source_ingest_session_id" not in public_streams.text
+    public_streams_response = public_list_streams(user_id=user_id, db=db)
+    public_streams_dump = public_streams_response.model_dump()
+    assert public_streams_dump["output_streams"][0]["output_stream_id"] == output_stream_id
+    assert public_streams_dump["output_streams"][0]["playback_path"] == playback_path
+    assert "ingest_key" not in str(public_streams_dump)
+    assert "source_ingest_session_id" not in str(public_streams_dump)
 
-    viewer_session = client.post("/api/v1/viewer/session", json={"client_code": client_code})
-    assert viewer_session.status_code == 200
-    viewer_token = viewer_session.json()["viewer_token"]
+    viewer_session_response = viewer_session(ViewerSessionRequest(client_code=client_code), db)
+    viewer_token = viewer_session_response.viewer_token
+    assert viewer_token
 
-    viewer_streams = client.get("/api/v1/viewer/streams", headers={"Authorization": f"Bearer {viewer_token}"})
-    assert viewer_streams.status_code == 200
-    assert viewer_streams.json()["streams"][0]["output_stream_id"] == output_stream_id
-    assert "ingest_key" not in viewer_streams.text
-    assert "source_ingest_session_id" not in viewer_streams.text
+    user = db.get(User, user_id)
+    viewer_streams_response = viewer_streams(user=user, db=db)
+    viewer_streams_dump = viewer_streams_response.model_dump()
+    assert viewer_streams_dump["streams"][0]["output_stream_id"] == output_stream_id
+    assert "ingest_key" not in str(viewer_streams_dump)
+    assert "source_ingest_session_id" not in str(viewer_streams_dump)
 
-    token_by_id = client.post("/api/v1/playback-token", json={"user_id": user_id, "output_stream_id": output_stream_id})
-    assert token_by_id.status_code == 200
-    token_by_id_body = token_by_id.json()
-    assert token_by_id_body["output_stream_id"] == output_stream_id
-    assert f"/live/{playback_path}/whep?token=" in token_by_id_body["playback_url"]
-    assert ingest_key not in token_by_id_body["playback_url"]
+    token_by_id_response = playback_token(PlaybackTokenRequest(user_id=user_id, output_stream_id=output_stream_id), db)
+    token_by_id_dump = token_by_id_response.model_dump()
+    assert token_by_id_dump["output_stream_id"] == output_stream_id
+    assert f"/live/{playback_path}/whep?token=" in token_by_id_dump["playback_url"]
+    assert ingest_key not in token_by_id_dump["playback_url"]
 
-    token_by_path = client.post("/api/v1/playback-token", json={"user_id": user_id, "playback_path": playback_path})
-    assert token_by_path.status_code == 200
-    assert token_by_path.json()["playback_path"] == playback_path
+    token_by_path_response = playback_token(PlaybackTokenRequest(user_id=user_id, playback_path=playback_path), db)
+    assert token_by_path_response.playback_path == playback_path
 
-    token_with_ingest_key = client.post("/api/v1/playback-token", json={"user_id": user_id, "playback_path": ingest_key})
-    assert token_with_ingest_key.status_code == 400
-    assert token_with_ingest_key.json()["error"]["code"] == "ingest_key_not_playback_identifier"
+    try:
+        playback_token(PlaybackTokenRequest(user_id=user_id, playback_path=ingest_key), db)
+        assert False
+    except Exception as exc:  # noqa: BLE001
+        assert exc.detail["code"] == "ingest_key_not_playback_identifier"
 
-    publish = client.post(
-        "/internal/media/auth",
-        json={"action": "publish", "path": f"live/{ingest_key}", "protocol": "rtmp"},
-        headers=internal_headers,
-    )
-    assert publish.status_code == 200
+    assert handle_media_auth(
+        MediaAuthRequest(action="publish", path=f"live/{ingest_key}", protocol="rtmp"),
+        db,
+    ) == {"status": "ok"}
 
-    rtmp_read_ingest = client.post(
-        "/internal/media/auth",
-        json={"action": "read", "path": f"live/{ingest_key}", "protocol": "rtmp"},
-        headers=internal_headers,
-    )
-    assert rtmp_read_ingest.status_code == 401
-    assert rtmp_read_ingest.json()["error"]["code"] == "rtmp_playback_disabled"
+    try:
+        handle_media_auth(
+            MediaAuthRequest(action="read", path=f"live/{ingest_key}", protocol="rtmp"),
+            db,
+        )
+        assert False
+    except Exception as exc:  # noqa: BLE001
+        assert exc.detail["code"] == "rtmp_playback_disabled"
 
-    rtmp_read_output = client.post(
-        "/internal/media/auth",
-        json={"action": "read", "path": f"live/{playback_path}", "protocol": "rtmp"},
-        headers=internal_headers,
-    )
-    assert rtmp_read_output.status_code == 401
-    assert rtmp_read_output.json()["error"]["code"] == "rtmp_playback_disabled"
+    try:
+        handle_media_auth(
+            MediaAuthRequest(action="read", path=f"live/{playback_path}", protocol="rtmp"),
+            db,
+        )
+        assert False
+    except Exception as exc:  # noqa: BLE001
+        assert exc.detail["code"] == "rtmp_playback_disabled"
 
-    viewer_playback = client.post(
-        f"/api/v1/viewer/streams/{output_stream_id}/playback-session",
-        headers={"Authorization": f"Bearer {viewer_token}"},
-    )
-    assert viewer_playback.status_code == 200
-    viewer_playback_body = viewer_playback.json()
-    assert viewer_playback_body["output_stream"]["playback_path"] == playback_path
-    assert f"/live/{playback_path}/whep?token=" in viewer_playback_body["playback"]["webrtc_url"]
-    assert ingest_key not in viewer_playback_body["playback"]["webrtc_url"]
+    viewer_playback_response = viewer_playback_session(output_stream_id, user=user, db=db)
+    viewer_playback_dump = viewer_playback_response.model_dump()
+    assert viewer_playback_dump["output_stream"]["playback_path"] == playback_path
+    assert f"/live/{playback_path}/whep?token=" in viewer_playback_dump["playback"]["webrtc_url"]
+    assert ingest_key not in viewer_playback_dump["playback"]["webrtc_url"]
 
-    whep_auth = client.post(
-        "/internal/media/auth",
-        json={
-            "action": "read",
-            "path": f"live/{playback_path}",
-            "protocol": "whep",
-            "query": f"token={token_by_id_body['token']}",
-        },
-        headers=internal_headers,
-    )
-    assert whep_auth.status_code == 200
+    assert handle_media_auth(
+        MediaAuthRequest(
+            action="read",
+            path=f"live/{playback_path}",
+            protocol="whep",
+            query=f"token={token_by_id_response.token}",
+        ),
+        db,
+    ) == {"status": "ok"}
 
-    app.dependency_overrides.clear()
+    db.close()

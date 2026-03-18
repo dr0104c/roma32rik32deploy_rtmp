@@ -80,6 +80,13 @@ if [[ "$(curl -fsS "${curl_base_opts[@]}" "${base_url}/health/ready" | jq -r '.r
 fi
 record_result "${backend_ready}" "backend_ready"
 
+frontend_js_mime_ok=false
+frontend_js_content_type="$(curl -fsSI "${curl_base_opts[@]}" "${base_url}/app.js?v=verify" | awk -F': ' 'tolower($1)=="content-type"{print tolower($2)}' | tr -d '\r')"
+if [[ "${frontend_js_content_type}" == application/javascript* || "${frontend_js_content_type}" == text/javascript* ]]; then
+  frontend_js_mime_ok=true
+fi
+record_result "${frontend_js_mime_ok}" "frontend_js_mime_ok"
+
 if ./deploy/media-smoke-test.sh "${media_state_file}"; then
   :
 else

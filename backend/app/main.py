@@ -5,6 +5,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .config import get_settings
+from .db import SessionLocal
 from .mediamtx_hooks import router as media_router
 from .routes.admin import router as admin_router
 from .routes.enroll import router as enroll_router
@@ -12,6 +13,7 @@ from .routes.health import router as health_router
 from .routes.playback import router as playback_router
 from .routes.streams import router as streams_router
 from .routes.viewer import router as viewer_router
+from .services.ingest import reconcile_live_ingests
 
 
 settings = get_settings()
@@ -22,6 +24,15 @@ logging.basicConfig(
 )
 
 app = FastAPI(title="stream-platform-backend", version="0.4.0")
+
+
+@app.on_event("startup")
+def restore_live_ingests() -> None:
+    db = SessionLocal()
+    try:
+        reconcile_live_ingests(db)
+    finally:
+        db.close()
 
 
 @app.exception_handler(HTTPException)

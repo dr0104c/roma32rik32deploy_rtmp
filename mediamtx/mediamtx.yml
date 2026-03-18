@@ -1,10 +1,13 @@
 logLevel: ${MEDIAMTX_LOG_LEVEL}
 
+api: yes
+apiAddress: :9997
+
 rtmp: yes
 rtmpAddress: :1935
 
 hls: no
-rtsp: no
+rtsp: yes
 srt: no
 
 webrtc: yes

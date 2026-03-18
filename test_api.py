@@ -113,7 +113,7 @@ def test_internal_rtmp_alias_pull_is_allowed_for_loopback_ingest_key():
             action="read",
             path=f"live/{ingest_session.ingest_key}",
             protocol="rtmp",
-            query="internal_secret=test-internal-secret-1234567890",
+            ip="127.0.0.1",
         ),
         db,
     ) == {"status": "ok"}
@@ -127,9 +127,9 @@ def test_internal_transcode_publish_is_allowed_for_loopback_playback_path():
     assert handle_media_auth(
         MediaAuthRequest(
             action="publish",
-            path=f"live/_transcode_{output_stream.playback_path}",
-            protocol="rtsp",
-            query="internal_secret=test-internal-secret-1234567890",
+            path=f"live/{output_stream.playback_path}",
+            protocol="rtmp",
+            ip="127.0.0.1",
         ),
         db,
     ) == {"status": "ok"}
@@ -137,16 +137,14 @@ def test_internal_transcode_publish_is_allowed_for_loopback_playback_path():
 
 
 def test_playback_alias_payload_uses_opus_transcode_when_enabled():
-    payload = build_playback_alias_payload(
-        playback_path="viewer-main",
-        ingest_key="ingest-key",
-        transcode_enabled=True,
-        internal_api_secret="secret-123",
-    )
+    payload = build_playback_alias_payload(playback_path="viewer-main", ingest_key="ingest-key", transcode_enabled=True)
 
     assert payload["name"] == "live/viewer-main"
-    assert payload["source"] == "rtsp://127.0.0.1:8554/live/_transcode_viewer-main?internal_secret=secret-123"
-    assert payload["sourceOnDemand"] is True
+    assert payload["source"] == "publisher"
+    assert "runOnDemand" in payload
+    assert "libopus" in payload["runOnDemand"]
+    assert "rtmp://127.0.0.1:1935/live/ingest-key" in payload["runOnDemand"]
+    assert "rtmp://127.0.0.1:1935/live/viewer-main" in payload["runOnDemand"]
 
 
 def test_ingest_publish_flow_uses_ingest_key_and_binds_output_stream():

@@ -1,0 +1,123 @@
+name: stream-platform
+
+x-default-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    container_name: stream-platform-postgres
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ../sql:/docker-entrypoint-initdb.d:ro
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - internal
+
+  backend:
+    build:
+      context: ../backend
+    container_name: stream-platform-backend
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - internal
+
+  mediamtx:
+    image: stream-platform-mediamtx:local
+    build:
+      context: ../docker/mediamtx
+    container_name: stream-platform-mediamtx
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    depends_on:
+      backend:
+        condition: service_healthy
+    logging: *default-logging
+    volumes:
+      - ../mediamtx/mediamtx.runtime.yml:/mediamtx.yml:ro
+    command: ["/mediamtx.yml"]
+    ports:
+      - "${RTMP_PORT}:1935"
+      - "${WEBRTC_ICE_PORT}:8189/tcp"
+      - "${WEBRTC_ICE_PORT}:8189/udp"
+    networks:
+      - internal
+
+  coturn:
+    image: coturn/coturn:4.6.3
+    container_name: stream-platform-coturn
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    logging: *default-logging
+    volumes:
+      - ../coturn/turnserver.runtime.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - "${TURN_PORT}:3478/tcp"
+      - "${TURN_PORT}:3478/udp"
+      - "${TURN_TLS_PORT}:5349/tcp"
+      - "${TURN_TLS_PORT}:5349/udp"
+      - "${TURN_MIN_PORT}-${TURN_MAX_PORT}:${TURN_MIN_PORT}-${TURN_MAX_PORT}/udp"
+    networks:
+      - internal
+
+  nginx:
+    image: nginx:1.27-bookworm
+    container_name: stream-platform-nginx
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      mediamtx:
+        condition: service_started
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - ../nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../nginx/site:/usr/share/nginx/html:ro
+      - ../nginx/certbot/www:/var/www/certbot:ro
+      - ../certs/letsencrypt:/etc/letsencrypt:ro
+    ports:
+      - "${NGINX_HTTP_PORT}:80"
+      - "${NGINX_HTTPS_PORT}:443"
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  postgres_data:

@@ -56,7 +56,7 @@ if [[ "${1:-}" == "--skipped" ]]; then
         playback_transport: "WebRTC/WHEP",
         ingest_transport: "RTMP",
         browser_rendering_verified: false,
-        transcoding: (if $transcoding_enabled == "true" then "requested but not implemented in current stack" else "absent / not configured" end),
+        transcoding: (if $transcoding_enabled == "true" then "enabled (runtime verification pending)" else "absent / not configured" end),
         media_verification_scope: "automated verification disabled by ENABLE_AUTOMATED_MEDIA_VERIFY=false"
       }
     }' > "${json_report}"
@@ -135,7 +135,7 @@ jq -n \
       playback_transport: "WebRTC/WHEP",
       ingest_transport: "RTMP",
       browser_rendering_verified: ($browser_level_rendering_verified == "true"),
-      transcoding: (if $transcoding_enabled == "true" and $transcoding_verified != "true" then "requested but not implemented in current stack" elif $transcoding_enabled == "true" then "enabled and verified" else "absent / not configured" end),
+      transcoding: (if $transcoding_enabled == "true" and $transcoding_verified != "true" then "enabled (runtime verification pending)" elif $transcoding_enabled == "true" then "enabled and verified" else "absent / not configured" end),
       media_verification_scope: $media_notes
     }
   }' > "${json_report}"

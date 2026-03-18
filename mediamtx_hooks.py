@@ -10,7 +10,6 @@ from .schemas import MediaAuthRequest, MediaEventRequest
 from .services.audit import write_audit_log
 from .services.ingest import handle_publish_start, handle_publish_stop
 from .services.ingest import get_ingest_session_by_key
-from .services.mediamtx import TRANSCODE_PATH_PREFIX
 from .services.playback import validate_playback_token_for_path
 from .services.streams import get_output_stream_by_playback_path
 
@@ -40,48 +39,23 @@ def parse_live_path(path: str) -> str:
     return parts[1]
 
 
-def has_valid_internal_stream_secret(query: str | None) -> bool:
-    secret = parse_qs(query or "").get("internal_secret", [None])[0]
-    if not secret:
-        return False
-
-    from secrets import compare_digest
-
-    return compare_digest(secret, get_settings().internal_api_secret)
-
-
-def is_loopback_ip(ip: str | None) -> bool:
-    return ip in {"127.0.0.1", "::1"}
-
-
 def is_internal_rtmp_alias_pull(body: MediaAuthRequest, db: Session, segment: str) -> bool:
-    if body.action.lower() != "read":
+    if body.action.lower() != "read" or (body.protocol or "").lower() != "rtmp":
         return False
-    if not (has_valid_internal_stream_secret(body.query) or is_loopback_ip(body.ip)):
+    if body.ip not in {"127.0.0.1", "::1"}:
         return False
 
     session = get_ingest_session_by_key(db, segment)
-    if session is not None and session.current_output_stream_id is not None:
-        return True
-
-    if not segment.startswith(TRANSCODE_PATH_PREFIX):
-        return False
-
-    playback_path = segment.removeprefix(TRANSCODE_PATH_PREFIX)
-    return get_output_stream_by_playback_path(db, playback_path) is not None
+    return session is not None and session.current_output_stream_id is not None
 
 
 def is_internal_transcode_publish(body: MediaAuthRequest, db: Session, segment: str) -> bool:
-    if body.action.lower() != "publish":
+    if body.action.lower() != "publish" or (body.protocol or "").lower() != "rtmp":
         return False
-    if not (has_valid_internal_stream_secret(body.query) or is_loopback_ip(body.ip)):
-        return False
-
-    if not segment.startswith(TRANSCODE_PATH_PREFIX):
+    if body.ip not in {"127.0.0.1", "::1"}:
         return False
 
-    playback_path = segment.removeprefix(TRANSCODE_PATH_PREFIX)
-    return get_output_stream_by_playback_path(db, playback_path) is not None
+    return get_output_stream_by_playback_path(db, segment) is not None
 
 
 def handle_media_auth(body: MediaAuthRequest, db: Session) -> dict[str, str]:
@@ -117,7 +91,7 @@ def handle_media_auth(body: MediaAuthRequest, db: Session) -> dict[str, str]:
         db.commit()
         raise unauthorized("media_action_invalid", "unsupported media action")
 
-    if is_internal_rtmp_alias_pull(body, db, segment):
+    if protocol == "rtmp" and is_internal_rtmp_alias_pull(body, db, segment):
         return {"status": "ok"}
 
     if protocol == "rtmp":

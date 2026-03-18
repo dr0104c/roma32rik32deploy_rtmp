@@ -38,7 +38,15 @@ ensure_bookworm() {
 install_base_packages() {
   info "installing base packages"
   run_as_root apt-get update
-  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq ffmpeg rsync lsb-release sudo
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl gnupg jq ffmpeg rsync lsb-release sudo python3 python3-venv
+}
+
+bootstrap_local_python_venv() {
+  info "bootstrapping local python venv for server-side tests and utilities"
+  cd "${TARGET_ROOT}"
+  python3 -m venv --clear .venv
+  ./.venv/bin/pip install --upgrade pip
+  ./.venv/bin/pip install -r backend/requirements.txt
 }
 
 install_docker() {
@@ -129,6 +137,7 @@ bootstrap_env() {
   grep -q '^MEDIAMTX_LOG_LEVEL=' .env || echo 'MEDIAMTX_LOG_LEVEL=info' >> .env
   grep -q '^INGEST_AUTH_MODE=' .env || echo 'INGEST_AUTH_MODE=open' >> .env
   grep -q '^INTERNAL_MEDIA_SECRET_REQUIRED=' .env || echo 'INTERNAL_MEDIA_SECRET_REQUIRED=true' >> .env
+  grep -q '^MEDIAMTX_CONTROL_API_BASE_URL=' .env || echo 'MEDIAMTX_CONTROL_API_BASE_URL=http://mediamtx:9997/v3' >> .env
   grep -q '^ENABLE_FFMPEG_TRANSCODE=' .env || echo 'ENABLE_FFMPEG_TRANSCODE=false' >> .env
   grep -q '^ENABLE_AUTOMATED_MEDIA_VERIFY=' .env || echo 'ENABLE_AUTOMATED_MEDIA_VERIFY=true' >> .env
   grep -q '^VERIFY_TURN=' .env || echo 'VERIFY_TURN=true' >> .env
@@ -238,9 +247,11 @@ run_db_migrations() {
   pg_db="$(env_get POSTGRES_DB .env)"
   local migration
   local ordered_migrations=()
-  [[ -f sql/003_server_beta.sql ]] && ordered_migrations+=("sql/003_server_beta.sql")
   [[ -f sql/001_init.sql ]] && ordered_migrations+=("sql/001_init.sql")
   [[ -f sql/002_seed.sql ]] && ordered_migrations+=("sql/002_seed.sql")
+  [[ -f sql/003_server_beta.sql ]] && ordered_migrations+=("sql/003_server_beta.sql")
+  [[ -f sql/004_product_model.sql ]] && ordered_migrations+=("sql/004_product_model.sql")
+  [[ -f sql/005_product_model_hotfix.sql ]] && ordered_migrations+=("sql/005_product_model_hotfix.sql")
   for migration in "${ordered_migrations[@]}"; do
     compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user}" -d "${pg_db}" < "${migration}"
   done
@@ -320,6 +331,7 @@ run_verification() {
     ./deploy/write-verification-report.sh --skipped
     return 0
   fi
+  bootstrap_local_python_venv
   ./deploy/verify-stack.sh
 }
 
