@@ -100,6 +100,38 @@ def get_ingest_session_by_key(db: Session, ingest_key: str) -> IngestSession | N
     return db.scalar(select(IngestSession).where(IngestSession.ingest_key == ingest_key).order_by(IngestSession.created_at.desc()))
 
 
+def get_or_create_publish_session(db: Session, *, ingest_key: str, source_label: str | None = None) -> IngestSession:
+    session = get_ingest_session_by_key(db, ingest_key)
+    if session is not None:
+        return session
+
+    session = IngestSession(
+        ingest_key=ingest_key,
+        source_label=source_label,
+        status="created",
+        metadata_json={"auto_registered_from_publish": True},
+    )
+    db.add(session)
+    db.flush()
+    write_audit_log(
+        db,
+        actor_type="media",
+        action="ingest_session_auto_registered",
+        target_type="ingest_session",
+        target_id=session.id,
+        metadata={"ingest_key": ingest_key, "source_label": source_label},
+    )
+    write_ingest_event(
+        db,
+        ingest_session_id=session.id,
+        event_type="auto_registered",
+        payload={"ingest_key": ingest_key, "source_label": source_label},
+    )
+    db.commit()
+    db.refresh(session)
+    return session
+
+
 def bind_ingest_session_to_output_stream(db: Session, *, ingest_session_id: str, output_stream_id: str | None) -> IngestSession:
     session = get_ingest_session(db, ingest_session_id)
     if output_stream_id is not None and db.get(OutputStream, output_stream_id) is None:
@@ -263,6 +295,7 @@ def mark_ingest_stopped(db: Session, *, ingest_key: str) -> IngestSession | None
 
 
 def handle_publish_start(db: Session, *, ingest_key: str, publisher_label: str | None = None) -> tuple[OutputStream | None, IngestSession | None]:
+    get_or_create_publish_session(db, ingest_key=ingest_key, source_label=publisher_label)
     session, output_stream = mark_ingest_started(db, ingest_key=ingest_key, source_label=publisher_label)
     if output_stream is not None:
         if get_settings().enable_ffmpeg_transcode:

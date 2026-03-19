@@ -19,12 +19,12 @@ os.environ.setdefault("TURN_URLS", "turn:127.0.0.1:3478?transport=udp")
 os.environ.setdefault("INGEST_AUTH_MODE", "keyed")
 os.environ.setdefault("INTERNAL_MEDIA_SECRET_REQUIRED", "true")
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.mediamtx_hooks import handle_media_auth
-from app.models import Base, User
+from app.models import Base, IngestSession, OutputStream, User
 from app.routes.admin import admin_create_output_stream, admin_grant_user, approve, create_ingest
 from app.routes.enroll import enroll
 from app.routes.playback import playback_token
@@ -154,6 +154,29 @@ def test_product_model_separates_ingest_key_from_playback_path():
         ),
         db,
     ) == {"status": "ok"}
+
+    db.close()
+
+
+def test_arbitrary_rtmp_publish_path_auto_registers_ingest_session():
+    db = fresh_db()
+
+    arbitrary_publish_path = "camera-lobby-01"
+
+    assert handle_media_auth(
+        MediaAuthRequest(action="publish", path=f"live/{arbitrary_publish_path}", protocol="rtmp"),
+        db,
+    ) == {"status": "ok"}
+
+    auto_session = db.scalar(select(IngestSession).where(IngestSession.ingest_key == arbitrary_publish_path))
+    auto_output_stream = db.get(OutputStream, auto_session.current_output_stream_id)
+
+    assert auto_session is not None
+    assert auto_session.status == "live"
+    assert auto_session.metadata_json["auto_registered_from_publish"] is True
+    assert auto_session.current_output_stream_id is not None
+    assert auto_output_stream is not None
+    assert auto_output_stream.playback_path != arbitrary_publish_path
 
     db.close()
 

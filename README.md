@@ -45,8 +45,9 @@ ACL назначается только на `output_stream`.
 
 ## Path Mapping
 
-- ingest publish path: `live/{ingest_session.ingest_key}`
+- ingest publish path: `live/{publisher_path}`
 - viewer playback path: `live/{output_stream.playback_path}`
+- `publisher_path` становится `ingest_session.ingest_key`
 - `ingest_key` не является viewer identifier
 - `playback_path` не является publish secret
 
@@ -74,7 +75,7 @@ ACL назначается только на `output_stream`.
 ## Admin Flow
 
 1. создать `output_stream`
-2. создать `ingest_session`
+2. опционально заранее создать `ingest_session`
 3. привязать ingest к output через `current_output_stream_id`
 4. выдать пользователю или группе доступ к `output_stream`
 
@@ -167,13 +168,19 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/ingest-sessions \
   -d '{"current_output_stream_id":"OUTPUT_STREAM_ID","source_label":"encoder-a"}'
 ```
 
-Публиковать RTMP через `ingest_key`:
+Публиковать RTMP можно через любой path, который выберет publisher:
 
 ```bash
 ffmpeg -re -f lavfi -i testsrc=size=640x360:rate=15 -f lavfi -i sine=frequency=1000 \
   -c:v libx264 -pix_fmt yuv420p -c:a aac -f flv \
-  "rtmp://127.0.0.1:1935/live/INGEST_KEY"
+  "rtmp://127.0.0.1:1935/live/my-camera-01"
 ```
+
+Если такого ingest path ещё нет в базе:
+
+- backend автоматически регистрирует `ingest_session`
+- backend автоматически создаёт и связывает `output_stream`
+- playback всё равно остаётся только через `output_stream` и playback token
 
 Запросить playback token по `output_stream_id`:
 
@@ -236,7 +243,7 @@ pytest backend/tests/test_product_model.py
 - output-stream ACL grant
 - public и viewer stream listing
 - playback token positive и negative cases
-- synthetic RTMP publish на `live/{ingest_key}`
+- synthetic RTMP publish на `live/{publisher_path}`
 - RTMP read deny checks для ingest path и output path
 - browserless WHEP HTTP auth-path verification
 
@@ -598,10 +605,12 @@ ACL по-прежнему выдаётся только на `output_stream`.
 - viewer client по-прежнему видит только `output_stream`
 - `ingest_key` не раскрывается
 - playback token выдаётся только для `output_stream`
+- publisher может выбрать произвольный RTMP path, но этот path не становится viewer identifier
 
 ## Security Notes
 
 - `ingest_key` не используется viewer clients и не должен использоваться Android или web viewer code
+- publisher RTMP path может быть произвольным и авто-регистрируется сервером на первом publish
 - bearer admin auth теперь канонический способ admin доступа
 - `X-Admin-Secret` оставлен только как transitional compatibility mode
 - если legacy secret mode не нужен, выключайте `LEGACY_ADMIN_SECRET_ENABLED`
