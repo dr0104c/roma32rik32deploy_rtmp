@@ -86,7 +86,7 @@ def _build_ffmpeg_command(*, playback_path: str, ingest_key: str) -> list[str]:
         "-profile:v",
         "baseline",
         "-level:v",
-        "3.1",
+        "4.0",
         "-g",
         "60",
         "-keyint_min",

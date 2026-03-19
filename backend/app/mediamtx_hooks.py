@@ -74,10 +74,20 @@ def is_internal_rtmp_alias_pull(body: MediaAuthRequest, db: Session, segment: st
 def is_internal_transcode_publish(body: MediaAuthRequest, db: Session, segment: str) -> bool:
     if body.action.lower() != "publish":
         return False
-    if not (has_valid_internal_stream_secret(body.query) or is_loopback_ip(body.ip)):
-        return False
 
     if not segment.startswith(TRANSCODE_PATH_PREFIX):
+        return False
+
+    # MediaMTX RTSP ANNOUNCE requests from the backend transcoder don't
+    # reliably surface the internal query string to the auth hook. RTSP is
+    # only reachable on the internal Docker network in this deployment, so
+    # allow publishes to managed transcode paths from there.
+    protocol = (body.protocol or "").lower()
+    if not (
+        has_valid_internal_stream_secret(body.query)
+        or is_loopback_ip(body.ip)
+        or protocol == "rtsp"
+    ):
         return False
 
     playback_path = segment.removeprefix(TRANSCODE_PATH_PREFIX)
