@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 import jwt
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import ProgrammingError
 
 from ..config import get_settings
 from ..errors import forbidden, not_found, unauthorized
@@ -87,7 +88,11 @@ def get_admin_user(db: Session, admin_user_id: str) -> AdminUser:
 
 
 def ensure_bootstrap_admin(db: Session) -> AdminUser | None:
-    existing = db.scalar(select(AdminUser).limit(1))
+    try:
+        existing = db.scalar(select(AdminUser).limit(1))
+    except ProgrammingError:
+        db.rollback()
+        return None
     if existing is not None:
         return existing
 

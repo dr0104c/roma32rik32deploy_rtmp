@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from starlette.requests import Request
 
+from app.admin_context import clear_current_admin_actor, current_admin_actor_id, set_current_admin_actor
 from app.auth import require_admin_access
 from app.config import get_settings
 from app.models import Base
@@ -131,6 +132,13 @@ def test_legacy_admin_secret_compatibility_mode():
         assert False
     except HTTPException as exc:
         assert exc.detail["code"] == "admin_auth_required"
+
+
+def test_admin_context_can_be_cleared_without_token_reset():
+    set_current_admin_actor("admin:test")
+    assert current_admin_actor_id() == "admin:test"
+    clear_current_admin_actor()
+    assert current_admin_actor_id() is None
 
 
 def test_approve_reject_block_unblock_routes():

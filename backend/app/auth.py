@@ -7,7 +7,7 @@ import jwt
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
-from .admin_context import reset_current_admin_actor, set_current_admin_actor
+from .admin_context import clear_current_admin_actor, set_current_admin_actor
 from .config import get_settings
 from .errors import unauthorized
 from .db import get_db
@@ -84,11 +84,11 @@ def require_admin_bearer(
         role=admin_user.role,
         auth_mode="bearer",
     )
-    token_ref = set_current_admin_actor(context.actor_id)
+    set_current_admin_actor(context.actor_id)
     try:
         yield context
     finally:
-        reset_current_admin_actor(token_ref)
+        clear_current_admin_actor()
 
 
 def require_admin_access(
@@ -118,11 +118,11 @@ def require_admin_access(
             auth_mode="legacy_secret",
         )
     request.state.admin_auth = context
-    token_ref = set_current_admin_actor(context.actor_id)
+    set_current_admin_actor(context.actor_id)
     try:
         yield context
     finally:
-        reset_current_admin_actor(token_ref)
+        clear_current_admin_actor()
 
 
 def require_viewer_user(request: Request, token: str = Depends(get_bearer_token), db: Session = Depends(get_db)) -> User:

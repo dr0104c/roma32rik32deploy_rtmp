@@ -1,5 +1,6 @@
 import logging
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -33,7 +34,10 @@ def restore_live_ingests() -> None:
     db = SessionLocal()
     try:
         ensure_bootstrap_admin(db)
-        reconcile_live_ingests(db)
+        try:
+            reconcile_live_ingests(db)
+        except httpx.HTTPError:
+            logging.getLogger(__name__).warning("skipping live ingest reconciliation because MediaMTX control API is unavailable at startup")
     finally:
         db.close()
 
