@@ -50,13 +50,22 @@ if [[ "${1:-}" == "--skipped" ]]; then
       transcoding_enabled: ($transcoding_enabled == "true"),
       transcoding_verified: false,
       browser_level_rendering_verified: false,
+      android_real_device_ice_verified: false,
+      expected_mvp_ingest_codec_contract: {
+        transport: "RTMP",
+        container: "FLV",
+        video_codec: "H264",
+        audio_codec: "AAC"
+      },
       overall_status: "skipped",
       failed_checks: ["automated_verification_skipped"],
       notes: {
         playback_transport: "WebRTC/WHEP",
         ingest_transport: "RTMP",
         browser_rendering_verified: false,
-        transcoding: (if $transcoding_enabled == "true" then "requested but not implemented in current stack" else "absent / not configured" end),
+        android_real_device_ice_verified: false,
+        transcoding: (if $transcoding_enabled == "true" then "enabled but not verified end-to-end" else "absent / not configured" end),
+        expected_ingest_codec_contract: "MVP verification input is RTMP/FLV with H.264 video + AAC audio",
         media_verification_scope: "automated verification disabled by ENABLE_AUTOMATED_MEDIA_VERIFY=false"
       }
     }' > "${json_report}"
@@ -68,6 +77,11 @@ Host/Domain: ${host_or_domain}
 Domain: ${DOMAIN_NAME}
 Overall status: skipped
 Reason: automated verification disabled by ENABLE_AUTOMATED_MEDIA_VERIFY=false
+Browser/device rendering verified: false
+ICE on real Android verified: false
+Transcoding enabled: ${ENABLE_FFMPEG_TRANSCODE}
+Transcoding verified: false
+Expected MVP ingest codec contract: RTMP/FLV with H.264 video + AAC audio
 EOF
   success "verification reports written to ${json_report} and ${txt_report}"
   exit 0
@@ -129,13 +143,22 @@ jq -n \
     transcoding_enabled: ($transcoding_enabled == "true"),
     transcoding_verified: ($transcoding_verified == "true"),
     browser_level_rendering_verified: ($browser_level_rendering_verified == "true"),
+    android_real_device_ice_verified: false,
+    expected_mvp_ingest_codec_contract: {
+      transport: "RTMP",
+      container: "FLV",
+      video_codec: "H264",
+      audio_codec: "AAC"
+    },
     overall_status: $overall_status,
     failed_checks: $failed_checks,
     notes: {
       playback_transport: "WebRTC/WHEP",
       ingest_transport: "RTMP",
       browser_rendering_verified: ($browser_level_rendering_verified == "true"),
-      transcoding: (if $transcoding_enabled == "true" and $transcoding_verified != "true" then "requested but not implemented in current stack" elif $transcoding_enabled == "true" then "enabled and verified" else "absent / not configured" end),
+      android_real_device_ice_verified: false,
+      transcoding: (if $transcoding_enabled == "true" and $transcoding_verified != "true" then "enabled but not verified end-to-end" elif $transcoding_enabled == "true" then "enabled and verified" else "absent / not configured" end),
+      expected_ingest_codec_contract: "MVP verification input is RTMP/FLV with H.264 video + AAC audio",
       media_verification_scope: $media_notes
     }
   }' > "${json_report}"
@@ -164,6 +187,8 @@ Protected playback channel OK: ${SMOKE_MEDIA_ENCRYPTION_OK}
 Transcoding enabled: ${SMOKE_TRANSCODING_ENABLED}
 Transcoding verified: ${SMOKE_TRANSCODING_VERIFIED}
 Browser-level rendering verified: ${SMOKE_BROWSER_RENDERING_VERIFIED}
+ICE on real Android verified: false
+Expected MVP ingest codec contract: RTMP/FLV with H.264 video + AAC audio
 Overall status: ${VERIFY_OVERALL_STATUS}
 
 Media semantics:
@@ -184,6 +209,7 @@ Notes:
 - ${SMOKE_MEDIA_NOTES}
 - RTMP ingest is plain RTMP and not encrypted unless RTMPS is added later.
 - Direct RTMP playback is intentionally blocked.
+- Browser/device rendering and ICE on a real Android client are not exercised by automated verification.
 - If TLS is disabled, playback auth can still work while encrypted playback remains false.
 
 Failed checks:

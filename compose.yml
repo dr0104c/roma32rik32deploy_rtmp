@@ -64,6 +64,7 @@ services:
       - ../mediamtx/mediamtx.runtime.yml:/mediamtx.yml:ro
     command: ["/mediamtx.yml"]
     ports:
+      # Public ingest and ICE candidates for external publishers/viewers.
       - "${RTMP_PORT}:1935"
       - "${WEBRTC_ICE_PORT}:8189/tcp"
       - "${WEBRTC_ICE_PORT}:8189/udp"
@@ -80,6 +81,7 @@ services:
     volumes:
       - ../coturn/turnserver.runtime.conf:/etc/coturn/turnserver.conf:ro
     ports:
+      # Public TURN listener ports plus relay allocation range.
       - "${TURN_PORT}:3478/tcp"
       - "${TURN_PORT}:3478/udp"
       - "${TURN_TLS_PORT}:5349/tcp"
@@ -110,6 +112,7 @@ services:
       - ../nginx/certbot/www:/var/www/certbot:ro
       - ../certs/letsencrypt:/etc/letsencrypt:ro
     ports:
+      # Public HTTP/HTTPS entrypoint for API, site, and WHEP-over-nginx.
       - "${NGINX_HTTP_PORT}:80"
       - "${NGINX_HTTPS_PORT}:443"
     networks:

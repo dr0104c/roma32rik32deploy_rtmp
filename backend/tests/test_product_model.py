@@ -29,7 +29,7 @@ from app.routes.admin import admin_create_output_stream, admin_grant_user, appro
 from app.routes.enroll import enroll
 from app.routes.playback import playback_token
 from app.routes.streams import public_list_streams
-from app.routes.viewer import viewer_playback_session, viewer_session, viewer_streams
+from app.routes.viewer import config, viewer_playback_session, viewer_session, viewer_streams
 from app.schemas import (
     CreateIngestSessionRequest,
     CreateOutputStreamRequest,
@@ -156,3 +156,20 @@ def test_product_model_separates_ingest_key_from_playback_path():
     ) == {"status": "ok"}
 
     db.close()
+
+
+def test_viewer_config_exposes_android_mvp_contract():
+    payload = config().model_dump()
+
+    assert payload["ingest_transport"] == "RTMP"
+    assert payload["ingest_container"] == "FLV"
+    assert payload["playback_transport"] == "WebRTC/WHEP"
+    assert payload["rtmp_playback_enabled"] is False
+    assert payload["output_stream_acl_scope"] == "output_stream"
+    assert payload["playback_token_lookup_fields"] == ["output_stream_id", "playback_path"]
+    assert payload["viewer_must_not_use_fields"] == ["ingest_key"]
+    assert payload["browser_rendering_verified"] is False
+    assert payload["real_android_ice_verified"] is False
+    assert payload["transcoding_verified"] is False
+    assert payload["expected_ingest_video_codec"] == "H264"
+    assert payload["expected_ingest_audio_codec"] == "AAC"

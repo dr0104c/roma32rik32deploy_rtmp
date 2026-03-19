@@ -214,6 +214,20 @@ class ViewerConfigResponse(BaseModel):
     turn_realm: str
     stream_list_poll_interval: int
     playback_token_ttl: int
+    ingest_transport: str
+    ingest_container: str
+    playback_transport: str
+    rtmp_playback_enabled: bool
+    output_stream_acl_scope: str
+    playback_token_lookup_fields: list[str]
+    viewer_must_not_use_fields: list[str]
+    browser_rendering_verified: bool
+    real_android_ice_verified: bool
+    transcoding_enabled: bool
+    transcoding_verified: bool
+    expected_ingest_video_codec: str
+    expected_ingest_audio_codec: str
+    expected_ingest_notes: str
 
 
 class ViewerStreamsResponse(BaseModel):

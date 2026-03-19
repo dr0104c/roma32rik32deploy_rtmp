@@ -1,6 +1,6 @@
 Stream Platform Verification Report
-Timestamp: 2026-03-17T11:25:57Z
-Host/Domain: 192.168.103.54
+Timestamp: 2026-03-19T12:59:06Z
+Host/Domain: 127.0.0.1
 Domain: 
 TLS enabled: false
 Containers OK: true
@@ -14,18 +14,20 @@ RTMP read blocked on ingest path: true
 RTMP read blocked on output path: true
 Playback path distinct from ingest key: true
 WHEP URL uses playback path: true
-WHEP/WebRTC endpoint OK: true
-TURN reachable: true
+WHEP/WebRTC endpoint OK: false
+TURN reachable: false
 Playback auth OK: true
 Protected playback channel OK: false
 Transcoding enabled: false
 Transcoding verified: false
 Browser-level rendering verified: false
-Overall status: passed
+ICE on real Android verified: false
+Expected MVP ingest codec contract: RTMP/FLV with H.264 video + AAC audio
+Overall status: failed
 
 Media semantics:
 - ingest accepted: true
-- stream republished to WebRTC/WHEP: true
+- stream republished to WebRTC/WHEP: false
 - viewer API hides ingest key: true
 - playback token rejects ingest key semantics: true
 - RTMP read denied on ingest path: true
@@ -38,10 +40,11 @@ Media semantics:
 - browser rendering verified: false
 
 Notes:
-- server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately
+- server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately; TURN verification skipped by config
 - RTMP ingest is plain RTMP and not encrypted unless RTMPS is added later.
 - Direct RTMP playback is intentionally blocked.
+- Browser/device rendering and ICE on a real Android client are not exercised by automated verification.
 - If TLS is disabled, playback auth can still work while encrypted playback remains false.
 
 Failed checks:
-- none
+- whep_or_webrtc_endpoint_ok

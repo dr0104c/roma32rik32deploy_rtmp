@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-03-17T11:25:57Z",
-  "host": "192.168.103.54",
+  "timestamp": "2026-03-19T12:59:06Z",
+  "host": "127.0.0.1",
   "domain": "",
   "tls_enabled": false,
   "containers_ok": true,
@@ -14,20 +14,31 @@
   "rtmp_read_blocked_on_output_path": true,
   "playback_path_is_distinct_from_ingest_key": true,
   "whep_url_uses_playback_path": true,
-  "whep_or_webrtc_endpoint_ok": true,
-  "turn_reachable": true,
+  "whep_or_webrtc_endpoint_ok": false,
+  "turn_reachable": false,
   "playback_auth_ok": true,
   "media_encryption_ok": false,
   "transcoding_enabled": false,
   "transcoding_verified": false,
   "browser_level_rendering_verified": false,
-  "overall_status": "passed",
-  "failed_checks": [],
+  "android_real_device_ice_verified": false,
+  "expected_mvp_ingest_codec_contract": {
+    "transport": "RTMP",
+    "container": "FLV",
+    "video_codec": "H264",
+    "audio_codec": "AAC"
+  },
+  "overall_status": "failed",
+  "failed_checks": [
+    "whep_or_webrtc_endpoint_ok"
+  ],
   "notes": {
     "playback_transport": "WebRTC/WHEP",
     "ingest_transport": "RTMP",
     "browser_rendering_verified": false,
+    "android_real_device_ice_verified": false,
     "transcoding": "absent / not configured",
-    "media_verification_scope": "server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately"
+    "expected_ingest_codec_contract": "MVP verification input is RTMP/FLV with H.264 video + AAC audio",
+    "media_verification_scope": "server-side media verification only; browser-level rendering not exercised; encrypted playback and transcoding are reported separately; TURN verification skipped by config"
   }
 }
