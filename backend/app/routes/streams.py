@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from ..auth import require_admin_secret
+from ..auth import require_admin_access
 from ..db import get_db
 from ..schemas import CreateOutputStreamRequest, GrantUserRequest, OutputStreamListResponse, OutputStreamResponse, PermissionMutationResponse, ViewerOutputStreamListResponse, ViewerOutputStreamResponse
 from ..services.permissions import grant_user_to_output_stream, revoke_user_access
@@ -12,7 +12,7 @@ from ..services.viewer import list_user_stream_payloads
 router = APIRouter(tags=["streams"])
 
 
-@router.post("/api/v1/admin/streams", response_model=OutputStreamResponse, dependencies=[Depends(require_admin_secret)], status_code=201)
+@router.post("/api/v1/admin/streams", response_model=OutputStreamResponse, dependencies=[Depends(require_admin_access)], status_code=201)
 def compatibility_create_stream(body: CreateOutputStreamRequest, db: Session = Depends(get_db)) -> OutputStreamResponse:
     output_stream = create_output_stream(
         db,
@@ -28,19 +28,19 @@ def compatibility_create_stream(body: CreateOutputStreamRequest, db: Session = D
     return OutputStreamResponse(**build_output_stream_payload(output_stream))
 
 
-@router.get("/api/v1/admin/streams", response_model=OutputStreamListResponse, dependencies=[Depends(require_admin_secret)])
+@router.get("/api/v1/admin/streams", response_model=OutputStreamListResponse, dependencies=[Depends(require_admin_access)])
 def compatibility_list_streams(db: Session = Depends(get_db)) -> OutputStreamListResponse:
     payload = [OutputStreamResponse(**build_output_stream_payload(stream)) for stream in list_output_streams(db)]
     return OutputStreamListResponse(output_streams=payload, streams=payload)
 
 
-@router.post("/api/v1/admin/streams/{stream_id}/grant-user", response_model=PermissionMutationResponse, dependencies=[Depends(require_admin_secret)])
+@router.post("/api/v1/admin/streams/{stream_id}/grant-user", response_model=PermissionMutationResponse, dependencies=[Depends(require_admin_access)])
 def compatibility_grant_user(stream_id: str, body: GrantUserRequest, db: Session = Depends(get_db)) -> PermissionMutationResponse:
     grant_user_to_output_stream(db, stream_id, body.user_id)
     return PermissionMutationResponse(output_stream_id=stream_id, subject_id=body.user_id, subject_type="user", granted=True)
 
 
-@router.post("/api/v1/admin/streams/{stream_id}/revoke-user", response_model=PermissionMutationResponse, dependencies=[Depends(require_admin_secret)])
+@router.post("/api/v1/admin/streams/{stream_id}/revoke-user", response_model=PermissionMutationResponse, dependencies=[Depends(require_admin_access)])
 def compatibility_revoke_user(stream_id: str, body: GrantUserRequest, db: Session = Depends(get_db)) -> PermissionMutationResponse:
     revoke_user_access(db, stream_id, body.user_id)
     return PermissionMutationResponse(output_stream_id=stream_id, subject_id=body.user_id, subject_type="user", granted=False)

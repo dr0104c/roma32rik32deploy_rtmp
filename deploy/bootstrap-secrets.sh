@@ -27,9 +27,15 @@ set_secret_if_weak() {
   fi
 }
 
-for key in POSTGRES_PASSWORD ADMIN_SECRET INTERNAL_API_SECRET PLAYBACK_TOKEN_SECRET VIEWER_SESSION_SECRET TURN_SHARED_SECRET; do
+for key in POSTGRES_PASSWORD ADMIN_SECRET ADMIN_JWT_SECRET ADMIN_BOOTSTRAP_PASSWORD INTERNAL_API_SECRET PLAYBACK_TOKEN_SECRET VIEWER_SESSION_SECRET TURN_SHARED_SECRET; do
   set_secret_if_weak "${key}"
 done
+
+if ! grep -q '^ADMIN_BOOTSTRAP_USERNAME=' "${target_env}"; then
+  echo 'ADMIN_BOOTSTRAP_USERNAME=admin' >> "${target_env}"
+elif [[ -z "$(awk -F= '$1=="ADMIN_BOOTSTRAP_USERNAME" {print $2}' "${target_env}" | tail -n 1)" ]]; then
+  sed -i 's|^ADMIN_BOOTSTRAP_USERNAME=.*$|ADMIN_BOOTSTRAP_USERNAME=admin|' "${target_env}"
+fi
 
 chmod 600 "${target_env}"
 log "secrets bootstrapped into ${target_env}"

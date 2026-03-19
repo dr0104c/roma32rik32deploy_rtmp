@@ -1,0 +1,157 @@
+:root {
+  --bg: #f3efe4;
+  --panel: #fffaf0;
+  --ink: #1d1b18;
+  --muted: #6c665c;
+  --line: #d5c9b3;
+  --accent: #b2551f;
+  --accent-2: #28464b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    linear-gradient(140deg, rgba(178, 85, 31, 0.12), transparent 30%),
+    linear-gradient(320deg, rgba(40, 70, 75, 0.1), transparent 35%),
+    var(--bg);
+}
+
+.admin-shell {
+  width: min(1400px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 24px 0 48px;
+}
+
+.admin-hero, .panel {
+  background: rgba(255, 250, 240, 0.94);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(30, 27, 24, 0.08);
+}
+
+.admin-hero {
+  display: grid;
+  gap: 18px;
+  padding: 24px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 12px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.login-form, .stack-form, .inline-form {
+  display: grid;
+  gap: 10px;
+}
+
+input, select, button {
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  font: inherit;
+}
+
+input, select {
+  padding: 12px 14px;
+  background: white;
+}
+
+button {
+  padding: 12px 16px;
+  cursor: pointer;
+  background: var(--accent);
+  color: #fff7ef;
+  font-weight: 700;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--ink);
+}
+
+.admin-layout {
+  display: grid;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.panel {
+  padding: 20px;
+}
+
+.nav {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.view-body, .card-list {
+  display: grid;
+  gap: 12px;
+}
+
+.card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: white;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(40, 70, 75, 0.12);
+  color: var(--accent-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-card, .meta {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+
+.hidden {
+  display: none;
+}
+
+@media (min-width: 1080px) {
+  .admin-layout {
+    grid-template-columns: 260px 1.2fr 1fr;
+    align-items: start;
+  }
+}

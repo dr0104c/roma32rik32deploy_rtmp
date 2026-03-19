@@ -1,15 +1,18 @@
 import secrets
 import string
+from collections.abc import Generator
 from typing import Any
 
 import jwt
 from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
+from .admin_context import reset_current_admin_actor, set_current_admin_actor
 from .config import get_settings
 from .errors import unauthorized
 from .db import get_db
 from .models import User
+from .services.admin_auth import AdminAuthContext, validate_admin_access_token
 
 
 ALPHABET = string.ascii_uppercase + string.digits
@@ -33,6 +36,8 @@ def _random_code(length: int) -> str:
 
 def require_admin_secret(x_admin_secret: str = Header(alias="X-Admin-Secret")) -> None:
     settings = get_settings()
+    if not settings.legacy_admin_secret_enabled:
+        raise unauthorized("legacy_admin_secret_disabled", "legacy admin secret auth is disabled")
     if not secrets.compare_digest(x_admin_secret, settings.admin_secret):
         raise unauthorized("admin_secret_invalid", "invalid admin secret")
 
@@ -52,6 +57,72 @@ def get_bearer_token(authorization: str = Header(default="", alias="Authorizatio
     if not token:
         raise unauthorized("bearer_missing", "missing bearer token")
     return token
+
+
+def optional_bearer_token(authorization: str = Header(default="", alias="Authorization")) -> str | None:
+    if not authorization:
+        return None
+    prefix = "Bearer "
+    if not authorization.startswith(prefix):
+        raise unauthorized("bearer_invalid", "invalid bearer token format")
+    token = authorization[len(prefix):].strip()
+    if not token:
+        raise unauthorized("bearer_missing", "missing bearer token")
+    return token
+
+
+def require_admin_bearer(
+    token: str | None = Depends(optional_bearer_token),
+    db: Session = Depends(get_db),
+) -> Generator[AdminAuthContext, None, None]:
+    if not token:
+        raise unauthorized("admin_bearer_missing", "missing admin bearer token")
+    admin_user = validate_admin_access_token(db, token)
+    context = AdminAuthContext(
+        admin_user_id=admin_user.id,
+        username=admin_user.username,
+        role=admin_user.role,
+        auth_mode="bearer",
+    )
+    token_ref = set_current_admin_actor(context.actor_id)
+    try:
+        yield context
+    finally:
+        reset_current_admin_actor(token_ref)
+
+
+def require_admin_access(
+    request: Request,
+    token: str | None = Depends(optional_bearer_token),
+    x_admin_secret: str = Header(default="", alias="X-Admin-Secret"),
+    db: Session = Depends(get_db),
+) -> Generator[AdminAuthContext, None, None]:
+    settings = get_settings()
+    if token:
+        admin_user = validate_admin_access_token(db, token)
+        context = AdminAuthContext(
+            admin_user_id=admin_user.id,
+            username=admin_user.username,
+            role=admin_user.role,
+            auth_mode="bearer",
+        )
+    else:
+        if not settings.legacy_admin_secret_enabled:
+            raise unauthorized("admin_auth_required", "missing admin bearer token")
+        if not x_admin_secret or not secrets.compare_digest(x_admin_secret, settings.admin_secret):
+            raise unauthorized("admin_secret_invalid", "invalid admin secret")
+        context = AdminAuthContext(
+            admin_user_id=None,
+            username="legacy-admin-secret",
+            role="legacy-admin",
+            auth_mode="legacy_secret",
+        )
+    request.state.admin_auth = context
+    token_ref = set_current_admin_actor(context.actor_id)
+    try:
+        yield context
+    finally:
+        reset_current_admin_actor(token_ref)
 
 
 def require_viewer_user(request: Request, token: str = Depends(get_bearer_token), db: Session = Depends(get_db)) -> User:

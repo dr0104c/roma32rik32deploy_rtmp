@@ -90,11 +90,13 @@ sync_project() {
 
 validate_production_env() {
   cd "${TARGET_ROOT}"
-  local enable_tls domain_name acme_email admin_secret playback_secret viewer_secret internal_secret pg_password turn_secret http_port https_port
+  local enable_tls domain_name acme_email admin_secret admin_jwt_secret admin_bootstrap_password playback_secret viewer_secret internal_secret pg_password turn_secret http_port https_port
   enable_tls="$(env_get ENABLE_TLS .env)"
   domain_name="$(env_get DOMAIN_NAME .env)"
   acme_email="$(env_get ACME_EMAIL .env)"
   admin_secret="$(env_get ADMIN_SECRET .env)"
+  admin_jwt_secret="$(env_get ADMIN_JWT_SECRET .env)"
+  admin_bootstrap_password="$(env_get ADMIN_BOOTSTRAP_PASSWORD .env)"
   playback_secret="$(env_get PLAYBACK_TOKEN_SECRET .env)"
   viewer_secret="$(env_get VIEWER_SESSION_SECRET .env)"
   internal_secret="$(env_get INTERNAL_API_SECRET .env)"
@@ -111,7 +113,7 @@ validate_production_env() {
   fi
 
   local item
-  for item in "${admin_secret}" "${playback_secret}" "${viewer_secret}" "${internal_secret}" "${pg_password}" "${turn_secret}"; do
+  for item in "${admin_secret}" "${admin_jwt_secret}" "${admin_bootstrap_password}" "${playback_secret}" "${viewer_secret}" "${internal_secret}" "${pg_password}" "${turn_secret}"; do
     [[ "${#item}" -ge 24 ]] || fail "detected weak secret in .env"
     [[ ! "${item}" =~ ^(change-me|REPLACE_STRONG_SECRET|example.com)$ ]] || fail "detected placeholder secret in .env"
   done
@@ -129,6 +131,9 @@ bootstrap_env() {
   [[ -n "${detected_host}" ]] || detected_host="127.0.0.1"
 
   grep -q '^PUBLIC_HOST=' .env || echo "PUBLIC_HOST=${detected_host}" >> .env
+  grep -q '^ADMIN_BOOTSTRAP_USERNAME=' .env || echo 'ADMIN_BOOTSTRAP_USERNAME=admin' >> .env
+  grep -q '^ADMIN_ACCESS_TOKEN_TTL_SECONDS=' .env || echo 'ADMIN_ACCESS_TOKEN_TTL_SECONDS=3600' >> .env
+  grep -q '^LEGACY_ADMIN_SECRET_ENABLED=' .env || echo 'LEGACY_ADMIN_SECRET_ENABLED=true' >> .env
   grep -q '^VIEWER_SESSION_TTL_SECONDS=' .env || echo 'VIEWER_SESSION_TTL_SECONDS=86400' >> .env
   grep -q '^PLAYBACK_TOKEN_TTL_SECONDS=' .env || echo 'PLAYBACK_TOKEN_TTL_SECONDS=120' >> .env
   grep -q '^STREAM_LIST_POLL_INTERVAL_SECONDS=' .env || echo 'STREAM_LIST_POLL_INTERVAL_SECONDS=5' >> .env
@@ -252,6 +257,7 @@ run_db_migrations() {
   [[ -f sql/003_server_beta.sql ]] && ordered_migrations+=("sql/003_server_beta.sql")
   [[ -f sql/004_product_model.sql ]] && ordered_migrations+=("sql/004_product_model.sql")
   [[ -f sql/005_product_model_hotfix.sql ]] && ordered_migrations+=("sql/005_product_model_hotfix.sql")
+  [[ -f sql/006_admin_auth.sql ]] && ordered_migrations+=("sql/006_admin_auth.sql")
   for migration in "${ordered_migrations[@]}"; do
     compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "${pg_user}" -d "${pg_db}" < "${migration}"
   done

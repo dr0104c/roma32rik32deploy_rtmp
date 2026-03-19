@@ -37,6 +37,11 @@ if [[ "${1:-}" == "--skipped" ]]; then
       nginx_ok: false,
       rtmp_ingest_ok: false,
       rtmp_playback_blocked: false,
+      admin_auth_ok: false,
+      admin_ui_ok: false,
+      user_moderation_ok: false,
+      group_acl_ok: false,
+      legacy_admin_secret_mode: false,
       viewer_api_hides_ingest_key: false,
       playback_token_rejects_ingest_key: false,
       rtmp_read_blocked_on_ingest_path: false,
@@ -60,10 +65,13 @@ if [[ "${1:-}" == "--skipped" ]]; then
       overall_status: "skipped",
       failed_checks: ["automated_verification_skipped"],
       notes: {
+        admin_auth: false,
+        admin_ui: false,
         playback_transport: "WebRTC/WHEP",
         ingest_transport: "RTMP",
         browser_rendering_verified: false,
         android_real_device_ice_verified: false,
+        legacy_admin_secret_mode: false,
         transcoding: (if $transcoding_enabled == "true" then "enabled but not verified end-to-end" else "absent / not configured" end),
         expected_ingest_codec_contract: "MVP verification input is RTMP/FLV with H.264 video + AAC audio",
         media_verification_scope: "automated verification disabled by ENABLE_AUTOMATED_MEDIA_VERIFY=false"
@@ -77,6 +85,11 @@ Host/Domain: ${host_or_domain}
 Domain: ${DOMAIN_NAME}
 Overall status: skipped
 Reason: automated verification disabled by ENABLE_AUTOMATED_MEDIA_VERIFY=false
+Admin auth OK: false
+Admin UI OK: false
+Legacy admin secret mode: false
+User moderation OK: false
+Group ACL OK: false
 Browser/device rendering verified: false
 ICE on real Android verified: false
 Transcoding enabled: ${ENABLE_FFMPEG_TRANSCODE}
@@ -102,6 +115,11 @@ jq -n \
   --arg containers_ok "${VERIFY_CONTAINERS_OK}" \
   --arg backend_ready "${VERIFY_BACKEND_READY}" \
   --arg nginx_ok "${SMOKE_NGINX_OK}" \
+  --arg admin_auth_ok "${SMOKE_ADMIN_AUTH_OK}" \
+  --arg admin_ui_ok "${SMOKE_ADMIN_UI_OK}" \
+  --arg legacy_admin_secret_mode "${VERIFY_LEGACY_ADMIN_SECRET_MODE}" \
+  --arg user_moderation_ok "${SMOKE_USER_MODERATION_OK}" \
+  --arg group_acl_ok "${SMOKE_GROUP_ACL_OK}" \
   --arg rtmp_ingest_ok "${SMOKE_RTMP_INGEST_OK}" \
   --arg rtmp_playback_blocked "${SMOKE_RTMP_PLAYBACK_BLOCKED}" \
   --arg viewer_api_hides_ingest_key "${SMOKE_VIEWER_API_HIDES_INGEST_KEY}" \
@@ -128,6 +146,11 @@ jq -n \
     containers_ok: ($containers_ok == "true"),
     backend_ready: ($backend_ready == "true"),
     nginx_ok: ($nginx_ok == "true"),
+    admin_auth_ok: ($admin_auth_ok == "true"),
+    admin_ui_ok: ($admin_ui_ok == "true"),
+    legacy_admin_secret_mode: ($legacy_admin_secret_mode == "true"),
+    user_moderation_ok: ($user_moderation_ok == "true"),
+    group_acl_ok: ($group_acl_ok == "true"),
     rtmp_ingest_ok: ($rtmp_ingest_ok == "true"),
     rtmp_playback_blocked: ($rtmp_playback_blocked == "true"),
     viewer_api_hides_ingest_key: ($viewer_api_hides_ingest_key == "true"),
@@ -153,10 +176,13 @@ jq -n \
     overall_status: $overall_status,
     failed_checks: $failed_checks,
     notes: {
+      admin_auth: ($admin_auth_ok == "true"),
+      admin_ui: ($admin_ui_ok == "true"),
       playback_transport: "WebRTC/WHEP",
       ingest_transport: "RTMP",
       browser_rendering_verified: ($browser_level_rendering_verified == "true"),
       android_real_device_ice_verified: false,
+      legacy_admin_secret_mode: ($legacy_admin_secret_mode == "true"),
       transcoding: (if $transcoding_enabled == "true" and $transcoding_verified != "true" then "enabled but not verified end-to-end" elif $transcoding_enabled == "true" then "enabled and verified" else "absent / not configured" end),
       expected_ingest_codec_contract: "MVP verification input is RTMP/FLV with H.264 video + AAC audio",
       media_verification_scope: $media_notes
@@ -172,6 +198,11 @@ TLS enabled: ${VERIFY_TLS_ENABLED}
 Containers OK: ${VERIFY_CONTAINERS_OK}
 Backend ready: ${VERIFY_BACKEND_READY}
 nginx OK: ${SMOKE_NGINX_OK}
+Admin auth OK: ${SMOKE_ADMIN_AUTH_OK}
+Admin UI OK: ${SMOKE_ADMIN_UI_OK}
+Legacy admin secret mode: ${VERIFY_LEGACY_ADMIN_SECRET_MODE}
+User moderation OK: ${SMOKE_USER_MODERATION_OK}
+Group ACL OK: ${SMOKE_GROUP_ACL_OK}
 RTMP ingest accepted: ${SMOKE_RTMP_INGEST_OK}
 RTMP playback blocked: ${SMOKE_RTMP_PLAYBACK_BLOCKED}
 Viewer API hides ingest key: ${SMOKE_VIEWER_API_HIDES_INGEST_KEY}

@@ -32,9 +32,34 @@ class AdminUserListResponse(BaseModel):
     users: list[UserResponse]
 
 
+class AdminUserDetailResponse(BaseModel):
+    user: UserResponse
+    group_ids: list[str]
+    output_stream_ids: list[str]
+
+
 class ChangeUserStatusResponse(BaseModel):
     user_id: str
     status: str
+
+
+class AdminAuthLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class AdminAuthLoginResponse(BaseModel):
+    access_token: str
+    token_type: str
+    expires_in: int
+
+
+class AdminMeResponse(BaseModel):
+    id: str
+    username: str
+    role: str
+    is_active: bool
+    auth_mode: str
 
 
 class CreateOutputStreamRequest(BaseModel):
@@ -109,11 +134,46 @@ class GrantGroupRequest(BaseModel):
     group_id: str
 
 
+class CreateGroupRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+class GroupResponse(BaseModel):
+    group_id: str
+    name: str
+    member_count: int = 0
+
+
+class GroupListResponse(BaseModel):
+    groups: list[GroupResponse]
+
+
 class PermissionMutationResponse(BaseModel):
     output_stream_id: str
     subject_id: str
     subject_type: str
     granted: bool
+
+
+class AdminOutputStreamDetailResponse(BaseModel):
+    output_stream: OutputStreamResponse
+    user_ids: list[str]
+    group_ids: list[str]
+
+
+class AuditLogResponse(BaseModel):
+    id: str
+    actor_type: str
+    actor_id: str | None
+    action: str
+    target_type: str
+    target_id: str | None
+    metadata_json: dict[str, Any]
+    created_at: datetime
+
+
+class AuditLogListResponse(BaseModel):
+    audit_logs: list[AuditLogResponse]
 
 
 class CreateIngestSessionRequest(BaseModel):

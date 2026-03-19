@@ -9,6 +9,11 @@ class Settings(BaseSettings):
 
     database_url: str = Field(alias="DATABASE_URL")
     admin_secret: str = Field(alias="ADMIN_SECRET")
+    admin_jwt_secret: str = Field(alias="ADMIN_JWT_SECRET", default="")
+    admin_bootstrap_username: str = Field(alias="ADMIN_BOOTSTRAP_USERNAME", default="admin")
+    admin_bootstrap_password: str = Field(alias="ADMIN_BOOTSTRAP_PASSWORD", default="")
+    admin_access_token_ttl_seconds: int = Field(alias="ADMIN_ACCESS_TOKEN_TTL_SECONDS", default=3600)
+    legacy_admin_secret_enabled: bool = Field(alias="LEGACY_ADMIN_SECRET_ENABLED", default=True)
     internal_api_secret: str = Field(alias="INTERNAL_API_SECRET")
     playback_token_secret: str = Field(alias="PLAYBACK_TOKEN_SECRET")
     viewer_session_secret: str = Field(alias="VIEWER_SESSION_SECRET")

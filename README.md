@@ -153,7 +153,7 @@ Encrypted playback и transcoding — разные вещи:
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/output-streams \
-  -H 'X-Admin-Secret: change-me' \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'content-type: application/json' \
   -d '{"name":"Main Stage","public_name":"main-stage","title":"Main Stage","playback_path":"main-stage-watch"}'
 ```
@@ -162,7 +162,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/output-streams \
 
 ```bash
 curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/ingest-sessions \
-  -H 'X-Admin-Secret: change-me' \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   -H 'content-type: application/json' \
   -d '{"current_output_stream_id":"OUTPUT_STREAM_ID","source_label":"encoder-a"}'
 ```
@@ -413,3 +413,234 @@ Android не должен использовать:
 - Terraform / infra provisioning
 - расширенный transcoding matrix
 - real-device Android playback verification
+
+## Admin Authentication
+
+Начиная с этого этапа канонический admin auth для server MVP — bearer-based.
+
+Новые auth endpoints:
+
+- `POST /api/v1/admin/auth/login`
+- `GET /api/v1/admin/auth/me`
+
+Login request:
+
+```json
+{
+  "username": "admin",
+  "password": "..."
+}
+```
+
+Login response:
+
+```json
+{
+  "access_token": "...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+`access_token` должен передаваться как:
+
+```text
+Authorization: Bearer <token>
+```
+
+## Bootstrap Admin
+
+Bootstrap admin создаётся из env, если таблица `admin_users` пуста.
+
+Новые env:
+
+- `ADMIN_JWT_SECRET`
+- `ADMIN_BOOTSTRAP_USERNAME`
+- `ADMIN_BOOTSTRAP_PASSWORD`
+- `ADMIN_ACCESS_TOKEN_TTL_SECONDS`
+- `LEGACY_ADMIN_SECRET_ENABLED`
+
+Минимальный bootstrap contract:
+
+- `ADMIN_BOOTSTRAP_USERNAME=admin`
+- `ADMIN_BOOTSTRAP_PASSWORD=<strong secret>`
+- `ADMIN_JWT_SECRET=<strong secret>`
+
+Пароль хранится только в hash виде в `admin_users.password_hash`.
+
+## Legacy X-Admin-Secret Compatibility Mode
+
+Старый `X-Admin-Secret` не удалён, но считается transitional compatibility mode.
+
+Правила:
+
+- если `LEGACY_ADMIN_SECRET_ENABLED=true`, старые admin routes продолжают принимать `X-Admin-Secret`
+- если `LEGACY_ADMIN_SECRET_ENABLED=false`, admin bearer token становится единственным рекомендуемым способом доступа
+- production recommendation: использовать bearer auth и выключать legacy secret mode
+
+Это сделано, чтобы не ломать существующие deploy/e2e flows и compatibility aliases.
+
+## Admin API
+
+### Auth
+
+- `POST /api/v1/admin/auth/login`
+- `GET /api/v1/admin/auth/me`
+
+### Users / moderation
+
+- `GET /api/v1/admin/users?status=&search=&limit=&offset=`
+- `GET /api/v1/admin/users/{user_id}`
+- `POST /api/v1/admin/users/{user_id}/approve`
+- `POST /api/v1/admin/users/{user_id}/reject`
+- `POST /api/v1/admin/users/{user_id}/block`
+- `POST /api/v1/admin/users/{user_id}/unblock`
+
+MVP statuses:
+
+- `pending`
+- `approved`
+- `rejected`
+- `blocked`
+
+`unblock` в текущем MVP возвращает пользователя в `approved`.
+
+### Groups
+
+- `GET /api/v1/admin/groups`
+- `POST /api/v1/admin/groups`
+- `POST /api/v1/admin/users/{user_id}/groups/{group_id}`
+- `DELETE /api/v1/admin/users/{user_id}/groups/{group_id}`
+
+### Output streams / ACL
+
+Канонический ACL API остаётся `output_stream`-centric.
+
+- `GET /api/v1/admin/output-streams`
+- `GET /api/v1/admin/output-streams/{output_stream_id}`
+- `POST /api/v1/admin/output-streams`
+- `PATCH /api/v1/admin/output-streams/{output_stream_id}`
+- `POST /api/v1/admin/output-streams/{output_stream_id}/grant-user`
+- `DELETE /api/v1/admin/output-streams/{output_stream_id}/grant-user/{user_id}`
+- `POST /api/v1/admin/output-streams/{output_stream_id}/grant-group`
+- `DELETE /api/v1/admin/output-streams/{output_stream_id}/grant-group/{group_id}`
+
+### Ingest sessions
+
+- `POST /api/v1/admin/ingest-sessions`
+- `GET /api/v1/admin/ingest-sessions`
+- `GET /api/v1/admin/ingest-sessions/{ingest_session_id}`
+- `PATCH /api/v1/admin/ingest-sessions/{ingest_session_id}`
+- `POST /api/v1/admin/ingest-sessions/{ingest_session_id}/rotate-key`
+- `POST /api/v1/admin/ingest-sessions/{ingest_session_id}/revoke`
+
+### Audit
+
+- `GET /api/v1/admin/audit?target_type=&target_id=&limit=&offset=`
+
+## Admin UI
+
+В стек добавлена очень простая server-served admin панель без отдельного frontend build pipeline.
+
+Адрес:
+
+- `/admin/`
+
+Что умеет UI:
+
+- login админом
+- pending users
+- all users
+- user details
+- groups
+- output streams
+- audit log
+- approve / reject / block / unblock
+- add user to group
+- grant user -> output_stream
+- grant group -> output_stream
+- create group
+- create output_stream
+
+UI намеренно утилитарный:
+
+- vanilla HTML/CSS/JS
+- без node build chain
+- без SPA framework
+- работает в текущем docker/nginx stack
+
+## Client Moderation Flow
+
+Минимальный moderation flow для клиента и админа:
+
+1. viewer вызывает `POST /api/v1/enroll`
+2. пользователь появляется со статусом `pending`
+3. admin видит пользователя через `GET /api/v1/admin/users?status=pending`
+4. admin делает `approve`, `reject` или `block`
+5. только `approved` user может получить viewer session и playback token
+
+## Group-Based ACL
+
+ACL по-прежнему выдаётся только на `output_stream`.
+
+Теперь доступны два слоя назначения:
+
+- direct user -> `output_stream`
+- group -> `output_stream`
+
+Эффективный viewer access:
+
+- direct grant на `output_stream`
+- или membership в группе, которой выдан grant на `output_stream`
+
+Это не меняет viewer-facing contract:
+
+- viewer client по-прежнему видит только `output_stream`
+- `ingest_key` не раскрывается
+- playback token выдаётся только для `output_stream`
+
+## Security Notes
+
+- `ingest_key` не используется viewer clients и не должен использоваться Android или web viewer code
+- bearer admin auth теперь канонический способ admin доступа
+- `X-Admin-Secret` оставлен только как transitional compatibility mode
+- если legacy secret mode не нужен, выключайте `LEGACY_ADMIN_SECRET_ENABLED`
+- RTMP ingest разрешён
+- RTMP playback остаётся полностью запрещённым
+- internal `/internal/media/*` endpoints не должны быть доступны viewer/admin browser clients
+- verification report теперь отдельно показывает `admin_auth_ok`, `admin_ui_ok`, `legacy_admin_secret_mode`, `user_moderation_ok`, `group_acl_ok`
+
+## Curl Examples
+
+Получить admin token:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/auth/login \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"REPLACE_ADMIN_PASSWORD"}'
+```
+
+Получить admin me:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/admin/auth/me \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+```
+
+Создать `output_stream` через bearer auth:
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/v1/admin/output-streams \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H 'content-type: application/json' \
+  -d '{"name":"Main Stage","public_name":"main-stage","title":"Main Stage","playback_path":"main-stage-watch"}'
+```
+
+Legacy compatibility example:
+
+```bash
+curl -sS http://127.0.0.1:8080/api/v1/admin/users \
+  -H 'X-Admin-Secret: REPLACE_LEGACY_SECRET'
+```
+
+Используйте legacy secret только пока это нужно для совместимости.

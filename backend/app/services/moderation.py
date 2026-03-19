@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from ..errors import bad_request, not_found
@@ -14,11 +14,29 @@ VALID_TRANSITIONS = {
 }
 
 
-def list_users(db: Session, status_filter: str | None = None) -> list[User]:
+def list_users(
+    db: Session,
+    *,
+    status_filter: str | None = None,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[User]:
     query = select(User).order_by(User.created_at.desc())
     if status_filter:
         query = query.where(User.status == status_filter)
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.where(or_(User.display_name.ilike(pattern), User.client_code.ilike(pattern)))
+    query = query.limit(limit).offset(offset)
     return list(db.scalars(query).all())
+
+
+def get_user_for_admin(db: Session, user_id: str) -> User:
+    user = db.get(User, user_id)
+    if user is None:
+        raise not_found("user_not_found", "user not found")
+    return user
 
 
 def change_user_status(db: Session, user_id: str, new_status: str) -> User:

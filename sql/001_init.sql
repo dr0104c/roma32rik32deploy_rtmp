@@ -1,3 +1,13 @@
+CREATE TABLE IF NOT EXISTS admin_users (
+    id VARCHAR(36) PRIMARY KEY,
+    username VARCHAR(128) NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(16) NOT NULL DEFAULT 'owner' CHECK (role IN ('owner','admin')),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(36) PRIMARY KEY,
     display_name TEXT NOT NULL,
@@ -104,8 +114,10 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username);
 CREATE INDEX IF NOT EXISTS idx_ingest_sessions_current_output_stream_id ON ingest_sessions(current_output_stream_id);
 CREATE INDEX IF NOT EXISTS idx_ingest_sessions_status ON ingest_sessions(status);
 CREATE INDEX IF NOT EXISTS idx_output_streams_source_ingest_session_id ON output_streams(source_ingest_session_id);
 CREATE INDEX IF NOT EXISTS idx_output_streams_visibility ON output_streams(visibility);
 CREATE INDEX IF NOT EXISTS idx_ingest_event_logs_ingest_session_id_created_at ON ingest_event_logs(ingest_session_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target_type_target_id_created_at ON audit_logs(target_type, target_id, created_at DESC);

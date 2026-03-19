@@ -27,6 +27,17 @@ class TimestampMixin:
     )
 
 
+class AdminUser(Base, TimestampMixin):
+    __tablename__ = "admin_users"
+    __table_args__ = (CheckConstraint("role IN ('owner','admin')", name="ck_admin_users_role"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_uuid)
+    username: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False, default="owner", server_default="owner")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+
+
 class User(Base, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (CheckConstraint("status IN ('pending','approved','rejected','blocked')", name="ck_users_status"),)

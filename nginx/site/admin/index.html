@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin Console</title>
+  <link rel="stylesheet" href="/admin/app.css">
+</head>
+<body>
+  <main class="admin-shell">
+    <section class="admin-hero">
+      <div>
+        <p class="eyebrow">Stream Platform</p>
+        <h1>Admin Console</h1>
+        <p class="muted">Bearer-based admin access for moderation, ACL and audit.</p>
+      </div>
+      <form id="login-form" class="login-form">
+        <input id="username" name="username" placeholder="admin" autocomplete="username" required>
+        <input id="password" name="password" type="password" placeholder="password" autocomplete="current-password" required>
+        <button type="submit">Sign in</button>
+      </form>
+      <div id="login-status" class="status-card hidden"></div>
+    </section>
+
+    <section id="admin-app" class="admin-layout hidden">
+      <aside class="panel side">
+        <div id="admin-me"></div>
+        <nav class="nav">
+          <button data-view="pending">Pending Users</button>
+          <button data-view="users">All Users</button>
+          <button data-view="streams">Output Streams</button>
+          <button data-view="groups">Groups</button>
+          <button data-view="audit">Audit Log</button>
+        </nav>
+      </aside>
+
+      <section class="panel main">
+        <div class="toolbar">
+          <h2 id="view-title">Pending Users</h2>
+          <button id="refresh-button" class="secondary">Refresh</button>
+        </div>
+        <div id="view-body" class="view-body"></div>
+      </section>
+
+      <section class="panel detail">
+        <div class="toolbar">
+          <h2>Details</h2>
+        </div>
+        <div id="detail-body" class="view-body muted">Select a user or stream to inspect details.</div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/admin/app.js?v=20260319-1"></script>
+</body>
+</html>
