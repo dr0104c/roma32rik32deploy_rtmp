@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Admin Console</title>
+  <title>Админка</title>
   <link rel="stylesheet" href="/admin/app.css">
 </head>
 <body>
@@ -11,13 +11,13 @@
     <section class="admin-hero">
       <div>
         <p class="eyebrow">Stream Platform</p>
-        <h1>Admin Console</h1>
-        <p class="muted">Bearer-based admin access for moderation, ACL and audit.</p>
+        <h1>Админка</h1>
+        <p class="muted">Bearer-доступ администратора для модерации, прав доступа и аудита.</p>
       </div>
       <form id="login-form" class="login-form">
         <input id="username" name="username" placeholder="admin" autocomplete="username" required>
-        <input id="password" name="password" type="password" placeholder="password" autocomplete="current-password" required>
-        <button type="submit">Sign in</button>
+        <input id="password" name="password" type="password" placeholder="пароль" autocomplete="current-password" required>
+        <button type="submit">Войти</button>
       </form>
       <div id="login-status" class="status-card hidden"></div>
     </section>
@@ -26,31 +26,32 @@
       <aside class="panel side">
         <div id="admin-me"></div>
         <nav class="nav">
-          <button data-view="pending">Pending Users</button>
-          <button data-view="users">All Users</button>
-          <button data-view="streams">Output Streams</button>
-          <button data-view="groups">Groups</button>
-          <button data-view="audit">Audit Log</button>
+          <button data-view="pending">Заявки</button>
+          <button data-view="users">Пользователи</button>
+          <button data-view="active-ingests">Активные потоки</button>
+          <button data-view="streams">Выходные потоки</button>
+          <button data-view="groups">Группы</button>
+          <button data-view="audit">Журнал аудита</button>
         </nav>
       </aside>
 
       <section class="panel main">
         <div class="toolbar">
-          <h2 id="view-title">Pending Users</h2>
-          <button id="refresh-button" class="secondary">Refresh</button>
+          <h2 id="view-title">Заявки</h2>
+          <button id="refresh-button" class="secondary">Обновить</button>
         </div>
         <div id="view-body" class="view-body"></div>
       </section>
 
       <section class="panel detail">
         <div class="toolbar">
-          <h2>Details</h2>
+          <h2>Детали</h2>
         </div>
-        <div id="detail-body" class="view-body muted">Select a user or stream to inspect details.</div>
+        <div id="detail-body" class="view-body muted">Выберите пользователя или поток для просмотра деталей.</div>
       </section>
     </section>
   </main>
 
-  <script src="/admin/app.js?v=20260319-1"></script>
+  <script src="/admin/app.js?v=20260319-2"></script>
 </body>
 </html>
